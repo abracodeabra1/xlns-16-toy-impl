@@ -27,11 +27,17 @@ lns-backend/
 
 | Dependency | Purpose |
 |---|---|
-| [xlnscpp](https://github.com/xlnsresearch/xlnscpp) | C++ LNS library — required by challenges 4/5 and the backend |
+| [xlnscpp](https://github.com/xlnsresearch/xlnscpp) | C++ LNS library — included as a **git submodule** |
 | [ggml](https://github.com/ggml-org/ggml) | Required by challenge 2 and the full backend |
 | [llama.cpp](https://github.com/ggerganov/llama.cpp) | Required for end-to-end LLM inference validation |
 
-Clone xlnscpp alongside this repo so that `../xlnscpp/xlns16.cpp` is reachable from the challenge and backend directories, or adjust the `-I` include path as needed.
+xlnscpp is included as a submodule.  After cloning this repo, run:
+
+```bash
+git submodule update --init
+```
+
+This populates `xlnscpp/` so that `#include "xlns16.cpp"` and `#include "xlns32.cpp"` resolve correctly in challenges 4/5 and the backend.
 
 ---
 
@@ -78,7 +84,7 @@ Expected output (A × B^T for the 4×2 and 3×2 reference matrices):
 
 ```bash
 g++ -O2 -o lns_matmult_xlns32 challenges/challenge4/lns_matmult_xlns32.cpp \
-    -I/path/to/xlnscpp -lm
+    -Ixlnscpp -lm
 ./lns_matmult_xlns32
 ```
 
@@ -87,14 +93,14 @@ The function signature is identical to Challenge 3 (`float*` in, `float*` out). 
 For the table-approximation variant (removes `xlns32_ideal`):
 ```bash
 g++ -O2 -o lns_matmult_xlns32_approx challenges/challenge4/lns_matmult_xlns32_approx.cpp \
-    -I/path/to/xlnscpp -lm
+    -Ixlnscpp -lm
 ```
 
 ### Challenge 5 — xlns16 internal matrix multiply
 
 ```bash
 g++ -O2 -o lns_matmult_xlns16 challenges/challenge5/lns_matmult_xlns16.cpp \
-    -I/path/to/xlnscpp -lm
+    -Ixlnscpp -lm
 ./lns_matmult_xlns16
 ```
 

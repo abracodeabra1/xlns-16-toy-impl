@@ -1,0 +1,3 @@
+[submodule "xlnscpp"]
+	path = xlnscpp
+	url = https://github.com/xlnsresearch/xlnscpp
