@@ -1,0 +1,417 @@
+#include "ggml-impl.h"
+#include "ggml-lns.h"
+#include "ggml-backend-impl.h"
+
+#include "lns-ops.h"
+
+#include <cstring>
+
+// ============================================================
+// Backend context
+// ============================================================
+
+struct ggml_backend_lns_context {
+    // placeholder for future state (threading, profiling, etc.)
+};
+
+// ============================================================
+// Backend interface
+// ============================================================
+
+static const char * ggml_backend_lns_get_name(ggml_backend_t backend) {
+    return "LNS";
+
+    GGML_UNUSED(backend);
+}
+
+static void ggml_backend_lns_free(ggml_backend_t backend) {
+    ggml_backend_lns_context * ctx = (ggml_backend_lns_context *)backend->context;
+    delete ctx;
+    delete backend;
+}
+
+static enum ggml_status ggml_backend_lns_graph_compute(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
+    // Pre-pass: override activation tensor types from F32 to GGML_TYPE_LNS16.
+    // This keeps activations in xlns16 format between ops, avoiding F32 round-trips
+    // at every layer boundary. The buffer was allocated for F32 (4 bytes/elem),
+    // so writing LNS16 (2 bytes/elem) into it is safe — we use half the space.
+    // Strides (nb[]) are recalculated for contiguous LNS16 layout.
+    for (int i = 0; i < cgraph->n_nodes; i++) {
+        struct ggml_tensor * node = cgraph->nodes[i];
+
+        if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+            continue;
+        }
+        if (node->type == GGML_TYPE_LNS16) {
+            continue; // already overridden (shouldn't happen, but guard anyway)
+        }
+
+        switch (node->op) {
+            case GGML_OP_MUL_MAT:
+            case GGML_OP_ADD:
+            case GGML_OP_MUL:
+            case GGML_OP_SCALE:
+            case GGML_OP_SOFT_MAX:
+            case GGML_OP_RMS_NORM:
+            case GGML_OP_DIAG_MASK_INF:
+            case GGML_OP_UNARY:
+            case GGML_OP_GET_ROWS:
+            case GGML_OP_ROPE:
+                // Change output type to LNS16 and recalculate contiguous strides
+                node->type  = GGML_TYPE_LNS16;
+                node->nb[0] = sizeof(uint16_t);
+                node->nb[1] = (size_t)node->ne[0] * sizeof(uint16_t);
+                node->nb[2] = (size_t)node->nb[1] * (size_t)node->ne[1];
+                node->nb[3] = (size_t)node->nb[2] * (size_t)node->ne[2];
+                break;
+            default:
+                break; // CPY, CONT, DUP, view ops — leave type unchanged
+        }
+    }
+
+    // Compute pass: dispatch each op to its xlns16 kernel
+    for (int i = 0; i < cgraph->n_nodes; i++) {
+        struct ggml_tensor * node = cgraph->nodes[i];
+
+        if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
+            continue;
+        }
+
+        switch (node->op) {
+            case GGML_OP_MUL_MAT:
+                lns_mul_mat(node);
+                break;
+
+            case GGML_OP_ADD:
+                lns_add(node);
+                break;
+
+            case GGML_OP_MUL:
+                lns_mul(node);
+                break;
+
+            case GGML_OP_SCALE:
+                lns_scale(node);
+                break;
+
+            case GGML_OP_SOFT_MAX:
+                lns_soft_max(node);
+                break;
+
+            case GGML_OP_RMS_NORM:
+                lns_rms_norm(node);
+                break;
+
+            case GGML_OP_DIAG_MASK_INF:
+                lns_diag_mask_inf(node);
+                break;
+
+            case GGML_OP_UNARY:
+                switch (ggml_get_unary_op(node)) {
+                    case GGML_UNARY_OP_SILU: lns_silu(node); break;
+                    case GGML_UNARY_OP_GELU: lns_gelu(node); break;
+                    case GGML_UNARY_OP_RELU: lns_relu(node); break;
+                    default:
+                        GGML_ABORT("%s: unsupported unary op\n", __func__);
+                }
+                break;
+
+            case GGML_OP_GET_ROWS:
+                lns_get_rows(node);
+                break;
+
+            case GGML_OP_CPY:
+            case GGML_OP_CONT:
+            case GGML_OP_DUP:
+                lns_cpy(node);
+                break;
+
+            case GGML_OP_ROPE:
+                lns_rope(node);
+                break;
+
+            case GGML_OP_NONE:
+            case GGML_OP_RESHAPE:
+            case GGML_OP_VIEW:
+            case GGML_OP_PERMUTE:
+            case GGML_OP_TRANSPOSE:
+                break;
+
+            default:
+                GGML_ABORT("%s: unsupported op %s\n", __func__, ggml_op_desc(node));
+        }
+    }
+    return GGML_STATUS_SUCCESS;
+
+    GGML_UNUSED(backend);
+}
+
+static struct ggml_backend_i lns_backend_i = {
+    /* .get_name                = */ ggml_backend_lns_get_name,
+    /* .free                    = */ ggml_backend_lns_free,
+    /* .set_tensor_async        = */ NULL,
+    /* .get_tensor_async        = */ NULL,
+    /* .cpy_tensor_async        = */ NULL,
+    /* .synchronize             = */ NULL,
+    /* .graph_plan_create       = */ NULL,
+    /* .graph_plan_free         = */ NULL,
+    /* .graph_plan_update       = */ NULL,
+    /* .graph_plan_compute      = */ NULL,
+    /* .graph_compute           = */ ggml_backend_lns_graph_compute,
+    /* .event_record            = */ NULL,
+    /* .event_wait              = */ NULL,
+    /* .graph_optimize          = */ NULL,
+};
+
+// ============================================================
+// GUID
+// ============================================================
+
+static ggml_guid_t ggml_backend_lns_guid(void) {
+    // Randomly chosen GUID for LNS backend
+    static ggml_guid guid = {
+        0x4c, 0x4e, 0x53, 0x31, 0x36, 0x2d, 0x62, 0x6b,
+        0x65, 0x6e, 0x64, 0x2d, 0x67, 0x67, 0x6d, 0x6c
+    };
+    return &guid;
+}
+
+// ============================================================
+// Public API
+// ============================================================
+
+ggml_backend_t ggml_backend_lns_init(void) {
+    ggml_backend_lns_context * ctx = new ggml_backend_lns_context;
+
+    ggml_backend_t backend = new ggml_backend {
+        /* .guid    = */ ggml_backend_lns_guid(),
+        /* .iface   = */ lns_backend_i,
+        /* .device  = */ ggml_backend_reg_dev_get(ggml_backend_lns_reg(), 0),
+        /* .context = */ ctx,
+    };
+
+    return backend;
+}
+
+bool ggml_backend_is_lns(ggml_backend_t backend) {
+    return backend != NULL && ggml_guid_matches(backend->guid, ggml_backend_lns_guid());
+}
+
+// ============================================================
+// Device interface
+// ============================================================
+
+static const char * ggml_backend_lns_device_get_name(ggml_backend_dev_t dev) {
+    return "LNS";
+
+    GGML_UNUSED(dev);
+}
+
+static const char * ggml_backend_lns_device_get_description(ggml_backend_dev_t dev) {
+    return "Logarithmic Number System (xlns16)";
+
+    GGML_UNUSED(dev);
+}
+
+static void ggml_backend_lns_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
+    *free  = 0;
+    *total = 0;
+
+    GGML_UNUSED(dev);
+}
+
+static enum ggml_backend_dev_type ggml_backend_lns_device_get_type(ggml_backend_dev_t dev) {
+    return GGML_BACKEND_DEVICE_TYPE_ACCEL;
+
+    GGML_UNUSED(dev);
+}
+
+static void ggml_backend_lns_device_get_props(ggml_backend_dev_t dev, struct ggml_backend_dev_props * props) {
+    props->name        = ggml_backend_lns_device_get_name(dev);
+    props->description = ggml_backend_lns_device_get_description(dev);
+    props->type        = ggml_backend_lns_device_get_type(dev);
+    ggml_backend_lns_device_get_memory(dev, &props->memory_free, &props->memory_total);
+    props->caps = {
+        /* .async                 = */ false,
+        /* .host_buffer           = */ false,
+        /* .buffer_from_host_ptr  = */ true,
+        /* .events                = */ false,
+    };
+}
+
+static ggml_backend_t ggml_backend_lns_device_init_backend(ggml_backend_dev_t dev, const char * params) {
+    return ggml_backend_lns_init();
+
+    GGML_UNUSED(dev);
+    GGML_UNUSED(params);
+}
+
+static ggml_backend_buffer_type_t ggml_backend_lns_device_get_buffer_type(ggml_backend_dev_t dev) {
+    return ggml_backend_cpu_buffer_type();
+
+    GGML_UNUSED(dev);
+}
+
+static ggml_backend_buffer_t ggml_backend_lns_device_buffer_from_host_ptr(ggml_backend_dev_t dev, void * ptr, size_t size, size_t max_tensor_size) {
+    return ggml_backend_cpu_buffer_from_ptr(ptr, size);
+
+    GGML_UNUSED(dev);
+    GGML_UNUSED(max_tensor_size);
+}
+
+// Helper: true for F32 or LNS16 (the two activation formats this backend handles)
+static inline bool is_activation_type(enum ggml_type t) {
+    return t == GGML_TYPE_F32 || t == GGML_TYPE_LNS16;
+}
+
+static bool ggml_backend_lns_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
+    const struct ggml_tensor * src0 = op->src[0];
+
+    switch (op->op) {
+        case GGML_OP_NONE:
+        case GGML_OP_RESHAPE:
+        case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
+            return true;
+
+        case GGML_OP_MUL_MAT:
+            // src1 = activations (F32 or LNS16); src0 = weights (any type with to_float)
+            return is_activation_type(op->src[1]->type) &&
+                   (is_activation_type(src0->type) ||
+                    ggml_get_type_traits(src0->type)->to_float != NULL);
+
+        case GGML_OP_ADD:
+        case GGML_OP_MUL:
+        case GGML_OP_SCALE:
+        case GGML_OP_SOFT_MAX:
+        case GGML_OP_RMS_NORM:
+        case GGML_OP_DIAG_MASK_INF:
+        case GGML_OP_ROPE:
+            return is_activation_type(src0->type);
+
+        case GGML_OP_UNARY:
+            switch (ggml_get_unary_op(op)) {
+                case GGML_UNARY_OP_SILU:
+                case GGML_UNARY_OP_GELU:
+                case GGML_UNARY_OP_RELU:
+                    return is_activation_type(src0->type);
+                default:
+                    return false;
+            }
+
+        case GGML_OP_GET_ROWS:
+            return true; // handles any embedding table type with to_float
+
+        case GGML_OP_CPY:
+        case GGML_OP_CONT:
+        case GGML_OP_DUP:
+            return (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_F32)   ||
+                   (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_F16)   ||
+                   (src0->type == GGML_TYPE_LNS16 && op->type == GGML_TYPE_F32)   ||
+                   (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_LNS16) ||
+                   (src0->type == GGML_TYPE_LNS16 && op->type == GGML_TYPE_LNS16) ||
+                   (src0->type == op->type);
+
+        default:
+            return false;
+    }
+
+    GGML_UNUSED(dev);
+}
+
+static bool ggml_backend_lns_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
+    return ggml_backend_buft_is_host(buft);
+
+    GGML_UNUSED(dev);
+}
+
+static bool ggml_backend_lns_device_offload_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
+    // Offload all ops we support — this tells the scheduler to prefer LNS
+    // over CPU for these ops even though both use host buffers
+    return ggml_backend_lns_device_supports_op(dev, op);
+}
+
+static const struct ggml_backend_device_i ggml_backend_lns_device_i = {
+    /* .get_name             = */ ggml_backend_lns_device_get_name,
+    /* .get_description      = */ ggml_backend_lns_device_get_description,
+    /* .get_memory           = */ ggml_backend_lns_device_get_memory,
+    /* .get_type             = */ ggml_backend_lns_device_get_type,
+    /* .get_props            = */ ggml_backend_lns_device_get_props,
+    /* .init_backend         = */ ggml_backend_lns_device_init_backend,
+    /* .get_buffer_type      = */ ggml_backend_lns_device_get_buffer_type,
+    /* .get_host_buffer_type = */ NULL,
+    /* .buffer_from_host_ptr = */ ggml_backend_lns_device_buffer_from_host_ptr,
+    /* .supports_op          = */ ggml_backend_lns_device_supports_op,
+    /* .supports_buft        = */ ggml_backend_lns_device_supports_buft,
+    /* .offload_op           = */ ggml_backend_lns_device_offload_op,
+    /* .event_new            = */ NULL,
+    /* .event_free           = */ NULL,
+    /* .event_synchronize    = */ NULL,
+};
+
+// ============================================================
+// Registry interface
+// ============================================================
+
+static const char * ggml_backend_lns_reg_get_name(ggml_backend_reg_t reg) {
+    return "LNS";
+
+    GGML_UNUSED(reg);
+}
+
+static size_t ggml_backend_lns_reg_get_device_count(ggml_backend_reg_t reg) {
+    return 1;
+
+    GGML_UNUSED(reg);
+}
+
+static ggml_backend_dev_t ggml_backend_lns_reg_get_device(ggml_backend_reg_t reg, size_t index) {
+    GGML_ASSERT(index == 0);
+
+    static ggml_backend_device ggml_backend_lns_device = {
+        /* .iface   = */ ggml_backend_lns_device_i,
+        /* .reg     = */ reg,
+        /* .context = */ nullptr,
+    };
+
+    return &ggml_backend_lns_device;
+
+    GGML_UNUSED(reg);
+    GGML_UNUSED(index);
+}
+
+static void * ggml_backend_lns_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    return NULL;
+
+    GGML_UNUSED(reg);
+    GGML_UNUSED(name);
+}
+
+static const struct ggml_backend_reg_i ggml_backend_lns_reg_i = {
+    /* .get_name         = */ ggml_backend_lns_reg_get_name,
+    /* .get_device_count = */ ggml_backend_lns_reg_get_device_count,
+    /* .get_device       = */ ggml_backend_lns_reg_get_device,
+    /* .get_proc_address = */ ggml_backend_lns_get_proc_address,
+};
+
+ggml_backend_reg_t ggml_backend_lns_reg(void) {
+    static struct ggml_backend_reg ggml_backend_lns_reg = {
+        /* .api_version = */ GGML_BACKEND_API_VERSION,
+        /* .iface       = */ ggml_backend_lns_reg_i,
+        /* .context     = */ NULL,
+    };
+
+    // Register LNS16 type-trait hooks at runtime.
+    // This avoids a circular build dependency between ggml-base and ggml-lns.
+    // ggml_get_type_traits() returns const* but the underlying array is non-const;
+    // the cast is safe because the data was not declared const.
+    struct ggml_type_traits * tt =
+        const_cast<struct ggml_type_traits *>(ggml_get_type_traits(GGML_TYPE_LNS16));
+    tt->to_float      = (ggml_to_float_t)  lns16_to_f32_row;
+    tt->from_float_ref = (ggml_from_float_t) f32_to_lns16_row;
+
+    return &ggml_backend_lns_reg;
+}
+
+GGML_BACKEND_DL_IMPL(ggml_backend_lns_reg)

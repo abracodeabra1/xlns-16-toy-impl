@@ -1,0 +1,38 @@
+#pragma once
+
+#include "ggml.h"
+
+// C-linkage conversion helpers (used by ggml.c type-traits hooks)
+#ifdef __cplusplus
+extern "C" {
+#endif
+void lns16_to_f32_row(const void * GGML_RESTRICT src, float * GGML_RESTRICT dst, int64_t n);
+void f32_to_lns16_row(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t n);
+#ifdef __cplusplus
+}
+#endif
+
+// Phase 1
+void lns_mul_mat(struct ggml_tensor * dst);
+
+// Phase 2 — element-wise
+void lns_add(struct ggml_tensor * dst);
+void lns_mul(struct ggml_tensor * dst);
+void lns_scale(struct ggml_tensor * dst);
+
+// Phase 2 — normalization / attention
+void lns_soft_max(struct ggml_tensor * dst);
+void lns_rms_norm(struct ggml_tensor * dst);
+void lns_diag_mask_inf(struct ggml_tensor * dst);
+
+// Phase 2 — activations
+void lns_silu(struct ggml_tensor * dst);
+void lns_gelu(struct ggml_tensor * dst);
+void lns_relu(struct ggml_tensor * dst);
+
+// Phase 2 — data movement
+void lns_get_rows(struct ggml_tensor * dst);
+void lns_cpy(struct ggml_tensor * dst);
+
+// Phase 2 — positional encoding
+void lns_rope(struct ggml_tensor * dst);
