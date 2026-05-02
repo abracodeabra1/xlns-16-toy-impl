@@ -185,3 +185,85 @@ This is documented in the proposal as the primary accuracy challenge and motivat
 | `GET_ROWS` | Embedding lookup; dequant → F32 → xlns16 |
 | `CPY` / `CONT` / `DUP` | `memcpy` or stride-aware copy; F32↔F16↔LNS16 |
 | `ROPE` | cosf/sinf in F32 → xlns16 rotation; NORMAL + NEOX modes |
+
+---
+
+## Reproducing the end-to-end inference result
+
+This section gives the complete steps to reproduce LNS inference on
+**SmolLM2-135M-Instruct** from a clean machine.
+
+### What you need
+
+| Component | Source |
+|---|---|
+| This repo (`xlns-gsoc-application`) | https://github.com/abracodeabra1/xlns-gsoc-application |
+| Patched `llama.cpp` | See options A or B below |
+| `SmolLM2-135M-Instruct-Q4_K_M.gguf` | Hugging Face — download command below |
+
+---
+
+### Option A — Clone the pre-patched llama.cpp fork (recommended)
+
+A fork of `ggml-org/llama.cpp` with all LNS patches committed to the
+`lns-backend` branch is available at:
+
+> **https://github.com/abracodeabra1/llama.cpp** (branch: `lns-backend`)
+
+The fork is based on commit `056b50c319724ef4788da46c605673b94dc2374e` of the
+upstream repo and adds exactly the 10 files described in the
+[Core ggml changes required](#core-ggml-changes-required-not-included-here--apply-to-your-ggmlllamacpp-clone)
+table above.
+
+```bash
+# 1. Clone this repo (for xlnscpp submodule)
+git clone https://github.com/abracodeabra1/xlns-gsoc-application
+cd xlns-gsoc-application && git submodule update --init && cd ..
+
+# 2. Clone the patched llama.cpp fork
+git clone -b lns-backend https://github.com/abracodeabra1/llama.cpp
+cd llama.cpp
+
+# 3. Download the model
+pip install huggingface_hub
+huggingface-cli download bartowski/SmolLM2-135M-Instruct-GGUF \
+    SmolLM2-135M-Instruct-Q4_K_M.gguf --local-dir models
+
+# 4. Build
+mkdir build-lns && cd build-lns
+cmake .. -DGGML_LNS=ON -DGGML_METAL=OFF -DCMAKE_BUILD_TYPE=Release \
+         -DXLNSCPP_DIR=../../xlns-gsoc-application/xlnscpp
+cmake --build . --target llama-completion -j4
+
+# 5. Run inference
+./bin/llama-completion -m ../models/SmolLM2-135M-Instruct-Q4_K_M.gguf \
+    -p "The capital of France is" -n 20 -fa 0
+```
+
+> **Note on `-DXLNSCPP_DIR`:** the backend CMakeLists defaults to
+> `../../../../xlnscpp` (one directory above the `llama.cpp/` checkout).
+> The explicit flag above works regardless of where you place the repos.
+> `-fa 0` disables flash attention, which the LNS backend does not implement.
+
+---
+
+### Option B — Apply the patch to upstream llama.cpp
+
+If you prefer to start from a fresh upstream clone, a `git format-patch`
+patch file (`lns-backend.patch`) is included in the root of this repo.
+
+```bash
+# 1. Clone this repo (for xlnscpp and the patch file)
+git clone https://github.com/abracodeabra1/xlns-gsoc-application
+cd xlns-gsoc-application && git submodule update --init && cd ..
+
+# 2. Clone upstream llama.cpp at the exact base commit
+git clone https://github.com/ggml-org/llama.cpp
+cd llama.cpp
+git checkout 056b50c319724ef4788da46c605673b94dc2374e
+
+# 3. Apply the patch
+git am ../xlns-gsoc-application/lns-backend.patch
+
+# 4. Proceed with steps 3–5 from Option A above
+```
