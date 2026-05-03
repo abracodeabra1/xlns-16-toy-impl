@@ -7,10 +7,10 @@
 #   ./setup.sh --unit-test --skip-inference
 #
 # Model required for inference:
-#   SmolLM2-135M-Instruct-Q4_K_M.gguf
-#   Download from: https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct-GGUF
-#   Place it at: build/models/SmolLM2-135M-Instruct-Q4_K_M.gguf
-#   Or pass the path as: MODEL=/path/to/model.gguf ./setup.sh
+#   SmolLM2-135M-Instruct-Q4_K_M.gguf — download with:
+#     huggingface-cli download bartowski/SmolLM2-135M-Instruct-GGUF \
+#         SmolLM2-135M-Instruct-Q4_K_M.gguf --local-dir .
+#   Then pass the path as: MODEL=/path/to/model.gguf ./setup.sh
 
 set -e
 

@@ -16,9 +16,16 @@ git submodule update --init
 
 **2. Download the model**
 
-Download `SmolLM2-135M-Instruct-Q4_K_M.gguf` from
-[HuggingFaceTB/SmolLM2-135M-Instruct-GGUF](https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct-GGUF)
-and note the path to the file.
+Download `SmolLM2-135M-Instruct-Q4_K_M.gguf`:
+
+```bash
+# Using huggingface-cli (pip install huggingface_hub if needed)
+huggingface-cli download bartowski/SmolLM2-135M-Instruct-GGUF \
+    SmolLM2-135M-Instruct-Q4_K_M.gguf --local-dir .
+
+# Or with wget
+wget https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/main/SmolLM2-135M-Instruct-Q4_K_M.gguf
+```
 
 **3. Run**
 ```bash
