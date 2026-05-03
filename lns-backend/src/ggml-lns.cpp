@@ -31,45 +31,6 @@ static void ggml_backend_lns_free(ggml_backend_t backend) {
 }
 
 static enum ggml_status ggml_backend_lns_graph_compute(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
-    // Pre-pass: override activation tensor types from F32 to GGML_TYPE_LNS16.
-    // This keeps activations in xlns16 format between ops, avoiding F32 round-trips
-    // at every layer boundary. The buffer was allocated for F32 (4 bytes/elem),
-    // so writing LNS16 (2 bytes/elem) into it is safe — we use half the space.
-    // Strides (nb[]) are recalculated for contiguous LNS16 layout.
-    for (int i = 0; i < cgraph->n_nodes; i++) {
-        struct ggml_tensor * node = cgraph->nodes[i];
-
-        if ((node->flags & GGML_TENSOR_FLAG_COMPUTE) == 0) {
-            continue;
-        }
-        if (node->type == GGML_TYPE_LNS16) {
-            continue; // already overridden (shouldn't happen, but guard anyway)
-        }
-
-        switch (node->op) {
-            case GGML_OP_MUL_MAT:
-            case GGML_OP_ADD:
-            case GGML_OP_MUL:
-            case GGML_OP_SCALE:
-            case GGML_OP_SOFT_MAX:
-            case GGML_OP_RMS_NORM:
-            case GGML_OP_DIAG_MASK_INF:
-            case GGML_OP_UNARY:
-            case GGML_OP_GET_ROWS:
-            case GGML_OP_ROPE:
-                // Change output type to LNS16 and recalculate contiguous strides
-                node->type  = GGML_TYPE_LNS16;
-                node->nb[0] = sizeof(uint16_t);
-                node->nb[1] = (size_t)node->ne[0] * sizeof(uint16_t);
-                node->nb[2] = (size_t)node->nb[1] * (size_t)node->ne[1];
-                node->nb[3] = (size_t)node->nb[2] * (size_t)node->ne[2];
-                break;
-            default:
-                break; // CPY, CONT, DUP, view ops — leave type unchanged
-        }
-    }
-
-    // Compute pass: dispatch each op to its xlns16 kernel
     for (int i = 0; i < cgraph->n_nodes; i++) {
         struct ggml_tensor * node = cgraph->nodes[i];
 
@@ -259,11 +220,6 @@ static ggml_backend_buffer_t ggml_backend_lns_device_buffer_from_host_ptr(ggml_b
     GGML_UNUSED(max_tensor_size);
 }
 
-// Helper: true for F32 or LNS16 (the two activation formats this backend handles)
-static inline bool is_activation_type(enum ggml_type t) {
-    return t == GGML_TYPE_F32 || t == GGML_TYPE_LNS16;
-}
-
 static bool ggml_backend_lns_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
     const struct ggml_tensor * src0 = op->src[0];
 
@@ -276,41 +232,39 @@ static bool ggml_backend_lns_device_supports_op(ggml_backend_dev_t dev, const st
             return true;
 
         case GGML_OP_MUL_MAT:
-            // src1 = activations (F32 or LNS16); src0 = weights (any type with to_float)
-            return is_activation_type(op->src[1]->type) &&
-                   (is_activation_type(src0->type) ||
+            return op->src[1]->type == GGML_TYPE_F32 &&
+                   (src0->type == GGML_TYPE_F32 ||
                     ggml_get_type_traits(src0->type)->to_float != NULL);
 
         case GGML_OP_ADD:
         case GGML_OP_MUL:
+            return src0->type == GGML_TYPE_F32;
+
         case GGML_OP_SCALE:
         case GGML_OP_SOFT_MAX:
         case GGML_OP_RMS_NORM:
         case GGML_OP_DIAG_MASK_INF:
         case GGML_OP_ROPE:
-            return is_activation_type(src0->type);
+            return src0->type == GGML_TYPE_F32;
 
         case GGML_OP_UNARY:
             switch (ggml_get_unary_op(op)) {
                 case GGML_UNARY_OP_SILU:
                 case GGML_UNARY_OP_GELU:
                 case GGML_UNARY_OP_RELU:
-                    return is_activation_type(src0->type);
+                    return src0->type == GGML_TYPE_F32;
                 default:
                     return false;
             }
 
         case GGML_OP_GET_ROWS:
-            return true; // handles any embedding table type with to_float
+            return true; // handles any src0 type with to_float
 
         case GGML_OP_CPY:
         case GGML_OP_CONT:
         case GGML_OP_DUP:
-            return (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_F32)   ||
-                   (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_F16)   ||
-                   (src0->type == GGML_TYPE_LNS16 && op->type == GGML_TYPE_F32)   ||
-                   (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_LNS16) ||
-                   (src0->type == GGML_TYPE_LNS16 && op->type == GGML_TYPE_LNS16) ||
+            return (src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32) ||
+                   (src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F16) ||
                    (src0->type == op->type);
 
         default:
@@ -401,15 +355,6 @@ ggml_backend_reg_t ggml_backend_lns_reg(void) {
         /* .iface       = */ ggml_backend_lns_reg_i,
         /* .context     = */ NULL,
     };
-
-    // Register LNS16 type-trait hooks at runtime.
-    // This avoids a circular build dependency between ggml-base and ggml-lns.
-    // ggml_get_type_traits() returns const* but the underlying array is non-const;
-    // the cast is safe because the data was not declared const.
-    struct ggml_type_traits * tt =
-        const_cast<struct ggml_type_traits *>(ggml_get_type_traits(GGML_TYPE_LNS16));
-    tt->to_float      = (ggml_to_float_t)  lns16_to_f32_row;
-    tt->from_float_ref = (ggml_from_float_t) f32_to_lns16_row;
 
     return &ggml_backend_lns_reg;
 }
