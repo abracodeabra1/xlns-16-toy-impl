@@ -19,7 +19,7 @@ XLNSCPP_DIR="$REPO_ROOT/xlnscpp"
 BUILD_DIR="$REPO_ROOT/build"
 LLAMA_BASE_COMMIT="$(cat "$REPO_ROOT/patches/llama-base-commit.txt")"
 GGML_BASE_COMMIT="$(cat "$REPO_ROOT/patches/ggml-base-commit.txt")"
-MODEL="${MODEL:-$BUILD_DIR/models/SmolLM2-135M-Instruct-Q4_K_M.gguf}"
+MODEL="${MODEL:-}"
 
 RUN_UNIT_TEST=0
 RUN_INFERENCE=1
@@ -30,6 +30,16 @@ for arg in "$@"; do
         --skip-inference)    RUN_INFERENCE=0 ;;
     esac
 done
+
+if [ "$RUN_INFERENCE" -eq 1 ] && [ -z "$MODEL" ]; then
+    echo "ERROR: MODEL path not set. Download the model and run:"
+    echo "  MODEL=/path/to/SmolLM2-135M-Instruct-Q4_K_M.gguf ./setup.sh"
+    echo ""
+    echo "Download the model with:"
+    echo "  huggingface-cli download bartowski/SmolLM2-135M-Instruct-GGUF \\"
+    echo "      SmolLM2-135M-Instruct-Q4_K_M.gguf --local-dir ."
+    exit 1
+fi
 
 # Detect parallel job count
 if command -v nproc &>/dev/null; then
@@ -151,16 +161,6 @@ if [ "$RUN_INFERENCE" -eq 1 ]; then
 
     echo ""
     echo "==> Running LNS inference on SmolLM2-135M-Instruct"
-
-    if [ ! -f "$MODEL" ]; then
-        echo ""
-        echo "Model not found at: $MODEL"
-        echo "Download SmolLM2-135M-Instruct-Q4_K_M.gguf from:"
-        echo "  https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct-GGUF"
-        echo "Then run:"
-        echo "  MODEL=/path/to/SmolLM2-135M-Instruct-Q4_K_M.gguf ./setup.sh"
-        exit 1
-    fi
 
     "$LLAMA_DIR/build-lns/bin/llama-completion" \
         -m "$MODEL" \
