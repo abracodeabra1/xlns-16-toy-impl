@@ -41,6 +41,11 @@ if [ "$RUN_INFERENCE" -eq 1 ] && [ -z "$MODEL" ]; then
     exit 1
 fi
 
+# Resolve MODEL to an absolute path so it remains valid after cd calls below
+if [ -n "$MODEL" ]; then
+    MODEL="$(cd "$(dirname "$MODEL")" && pwd)/$(basename "$MODEL")"
+fi
+
 # Detect parallel job count
 if command -v nproc &>/dev/null; then
     JOBS=$(nproc)
@@ -94,7 +99,7 @@ if [ "$RUN_UNIT_TEST" -eq 1 ]; then
 
     cd "$GGML_DIR"
     echo "    Checking out base commit $GGML_BASE_COMMIT"
-    git checkout "$GGML_BASE_COMMIT"
+    git reset --hard "$GGML_BASE_COMMIT"
 
     echo "    Applying ggml-core.patch"
     git apply "$REPO_ROOT/patches/ggml-core.patch"
@@ -141,7 +146,7 @@ if [ "$RUN_INFERENCE" -eq 1 ]; then
 
     cd "$LLAMA_DIR"
     echo "    Checking out base commit $LLAMA_BASE_COMMIT"
-    git checkout "$LLAMA_BASE_COMMIT"
+    git reset --hard "$LLAMA_BASE_COMMIT"
 
     echo "    Applying llama-core.patch"
     git apply "$REPO_ROOT/patches/llama-core.patch"
