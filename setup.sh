@@ -122,6 +122,7 @@ EOF
     cd "$GGML_DIR/build-lns"
     cmake .. \
         -DGGML_LNS=ON \
+        -DGGML_METAL=OFF \
         -DCMAKE_BUILD_TYPE=Release \
         -DXLNSCPP_DIR="$XLNSCPP_DIR"
     cmake --build . --target test-lns-backend -j"$JOBS"
@@ -171,7 +172,8 @@ if [ "$RUN_INFERENCE" -eq 1 ]; then
         -m "$MODEL" \
         -p "The capital of France is" \
         -n 20 \
-        -fa 0
+        -fa 0 \
+        --no-cnv
 fi
 
 echo ""
