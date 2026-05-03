@@ -190,14 +190,4 @@ This is documented in the proposal as the primary accuracy challenge and motivat
 
 ## Reproducing the end-to-end inference result
 
-See [SETUP.md](SETUP.md) for full instructions.  The short version:
-
-```bash
-git clone https://github.com/abracodeabra1/xlns-gsoc-application
-cd xlns-gsoc-application
-git submodule update --init
-MODEL=/path/to/SmolLM2-135M-Instruct-Q4_K_M.gguf ./setup.sh
-```
-
-`setup.sh` clones llama.cpp at a pinned upstream commit, applies the patches
-in `patches/`, copies the backend source, and builds everything automatically.
+See [SETUP.md](SETUP.md) for full instructions. 
