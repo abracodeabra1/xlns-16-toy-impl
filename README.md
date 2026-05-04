@@ -5,6 +5,12 @@ GSoC 2026 application code for **"Support for Logarithmic Number Systems in Larg
 
 ---
 
+## Reproducing the end-to-end inference result
+
+See [SETUP.md](SETUP.md) for full instructions. 
+
+---
+
 ## Repository structure
 
 ```
@@ -185,9 +191,3 @@ This is documented in the proposal as the primary accuracy challenge and motivat
 | `GET_ROWS` | Embedding lookup; dequant → F32 → xlns16 |
 | `CPY` / `CONT` / `DUP` | `memcpy` or stride-aware copy; F32↔F16↔LNS16 |
 | `ROPE` | cosf/sinf in F32 → xlns16 rotation; NORMAL + NEOX modes |
-
----
-
-## Reproducing the end-to-end inference result
-
-See [SETUP.md](SETUP.md) for full instructions. 
