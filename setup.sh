@@ -172,7 +172,8 @@ if [ "$RUN_INFERENCE" -eq 1 ]; then
         -m "$MODEL" \
         -p "The capital of France is" \
         -n 20 \
-        -fa 0
+        -fa 0 \
+        -no-cnv
 fi
 
 echo ""
