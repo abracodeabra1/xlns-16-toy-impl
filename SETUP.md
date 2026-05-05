@@ -19,7 +19,7 @@ git submodule update --init
 Download `SmolLM2-135M-Instruct-Q4_K_M.gguf`:
 
 ```bash
-# Using huggingface-cli (pip install huggingface_hub if needed)
+# Using huggingface-cli, in the newer versions, use the hf command instead of huggingface-cli (pip install huggingface_hub if needed)
 huggingface-cli download bartowski/SmolLM2-135M-Instruct-GGUF \
     SmolLM2-135M-Instruct-Q4_K_M.gguf --local-dir .
 
