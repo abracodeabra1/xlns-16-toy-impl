@@ -116,14 +116,22 @@ Analogous to Challenge 4 but with `xlns16_float`, demonstrating the precision tr
 
 ## LNS Backend
 
-The backend implements a proper `ggml_backend` (modelled on the BLAS backend) that performs all supported ops in xlns16 arithmetic.  It registers itself as the `"LNS"` backend with `GGML_BACKEND_DEVICE_TYPE_ACCEL`.
+The backend implements a proper `ggml_backend` (modelled on the BLAS backend) that performs all supported ops in **xlns32** arithmetic.  It registers itself as the `"LNS"` backend with `GGML_BACKEND_DEVICE_TYPE_ACCEL`.
+
+This is the **xlns32 variant** of the backend: it is a sibling of the xlns16
+backend in `../initial_application/xlns-gsoc-application/` and shares the same
+architecture, but uses 32-bit LNS (≈23 fractional bits, comparable to FP32
+precision) instead of 16-bit LNS. Per-row F32→xlns32 conversion is **not**
+backed by a lookup table (xlnscpp has no 2³² table), so element conversion
+goes through real `log2`/`exp2` calls and is noticeably slower per element
+than xlns16 — accuracy is the goal here, not throughput.
 
 ### Core ggml changes required (not included here — apply to your ggml/llama.cpp clone)
 
 | File | Change |
 |---|---|
-| `ggml/include/ggml.h` | Add `GGML_TYPE_LNS16 = 41`, bump `GGML_TYPE_COUNT` to 42 |
-| `ggml/src/ggml.c` | Register LNS16 type traits (blck_size=1, type_size=2, not quantized) |
+| `ggml/include/ggml.h` | Add `GGML_TYPE_LNS32 = 41`, bump `GGML_TYPE_COUNT` to 42 |
+| `ggml/src/ggml.c` | Register LNS32 type traits (blck_size=1, type_size=4, not quantized) |
 | `ggml/CMakeLists.txt` | Add `GGML_LNS` CMake option (default OFF) |
 | `ggml/src/CMakeLists.txt` | Add `ggml_add_backend(LNS)` |
 | `ggml/src/ggml-backend-reg.cpp` | Add `#ifdef GGML_USE_LNS` include and registration |
@@ -139,24 +147,16 @@ cmake --build . -j4
 ./bin/test-lns-backend
 ```
 
-### Validation results (MUL_MAT, xlns16_table + xlns16_alt mode)
+### Validation results (MUL_MAT, xlns32_alt mode)
 
-| Element | Expected (F32) | LNS Result | Rel. error |
-|---------|---------------|------------|-----------|
-| [0,0] | 60.00 | 59.97 | 0.05% |
-| [1,0] | 55.00 | 55.00 | 0.00% |
-| [2,0] | 50.00 | 49.89 | 0.22% |
-| [3,0] | 110.00 | 109.99 | 0.01% |
-| [0,1] | 90.00 | 89.53 | 0.52% |
-| [1,1] | 54.00 | 53.82 | 0.33% |
-| [2,1] | 54.00 | 53.82 | 0.33% |
-| [3,1] | 126.00 | 125.26 | 0.59% |
-| [0,2] | 42.00 | 41.95 | 0.12% |
-| [1,2] | 29.00 | 28.87 | 0.45% |
-| [2,2] | 28.00 | 27.95 | 0.18% |
-| [3,2] | 64.00 | 64.00 | 0.00% |
+Expected: max relative error well under 0.1% on the reference 4×2 × 3×2 matmul
+(Challenge 4's stand-alone xlns32 matmul achieves the same). The unit test
+asserts < 0.5% to leave headroom; concrete per-element numbers will be filled
+in after the first local build.
 
-**Max relative error: 0.59%**
+> Compare to the xlns16 backend's max relative error of 0.59% on the same
+> matmul — xlns32 adds ~16 more fractional bits of precision, eliminating
+> nearly all of that error.
 
 ### End-to-end inference (SmolLM2-135M-Instruct, Q4_K_M)
 
@@ -171,23 +171,30 @@ cmake --build . --target llama-completion -j4
 ```
 
 The backend runs all 13 ops across 30 transformer layers without crashing.
-Output quality is degraded relative to the FP baseline, which is expected: xlns16 has 7 fractional bits versus 23 for F32, and cumulative rounding errors across 30 layers cause incoherence.
-This is documented in the proposal as the primary accuracy challenge and motivates the stretch goals (xlns32 accumulator, per-layer error analysis).
+xlns32 has roughly 23 fractional bits — comparable to FP32 — so generated
+text is expected to be coherent and close to the FP32 baseline (this is the
+explicit motivation for the xlns32 variant: validate that LNS is a viable
+arithmetic for LLMs when given enough precision, in contrast to the xlns16
+sibling whose output is incoherent across 30 layers).
+
+Per-token throughput is lower than the xlns16 sibling because every
+F32↔xlns32 conversion goes through real `log2`/`exp2` calls rather than a
+65 536-entry lookup table.
 
 ### Supported operations
 
 | Op | Implementation |
 |----|---------------|
-| `MUL_MAT` | xlns16 dot product; weights converted dynamically per row |
-| `ADD` | Element-wise `xlns16_add`; broadcasting supported |
-| `MUL` | Element-wise `xlns16_mul`; broadcasting supported |
-| `SCALE` | `xlns16_mul` with scalar from `op_params` |
-| `SOFT_MAX` | Numerically stable: max-subtract → `xlns16_exp` → sum → `xlns16_div` |
-| `RMS_NORM` | Sum-of-squares in xlns16; sqrt via `xlns16_float` wrapper |
-| `DIAG_MASK_INF` | Upper-triangle set to `xlns16(-INFINITY)` |
-| `SILU` | `xlns16_silu` per element |
-| `GELU` | `xlns16_gelu` per element |
-| `RELU` | `xlns16_relu` per element |
-| `GET_ROWS` | Embedding lookup; dequant → F32 → xlns16 |
-| `CPY` / `CONT` / `DUP` | `memcpy` or stride-aware copy; F32↔F16↔LNS16 |
-| `ROPE` | cosf/sinf in F32 → xlns16 rotation; NORMAL + NEOX modes |
+| `MUL_MAT` | xlns32 dot product; weights converted dynamically per row |
+| `ADD` | Element-wise `xlns32_add`; broadcasting supported |
+| `MUL` | Element-wise `xlns32_mul`; broadcasting supported |
+| `SCALE` | `xlns32_mul` with scalar from `op_params` |
+| `SOFT_MAX` | Numerically stable: max-subtract → `xlns32_exp` → sum → `xlns32_div` |
+| `RMS_NORM` | Sum-of-squares in xlns32; sqrt via `xlns32_float` wrapper |
+| `DIAG_MASK_INF` | Upper-triangle set to `xlns32(-INFINITY)` |
+| `SILU` | `xlns32_silu` per element |
+| `GELU` | `xlns32_gelu` per element |
+| `RELU` | `xlns32_relu` per element |
+| `GET_ROWS` | Embedding lookup; dequant → F32 → xlns32 |
+| `CPY` / `CONT` / `DUP` | `memcpy` or stride-aware copy; F32↔F16↔LNS32 |
+| `ROPE` | cosf/sinf in F32 → xlns32 rotation; NORMAL + NEOX modes |

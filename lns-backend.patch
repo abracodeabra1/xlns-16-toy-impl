@@ -3,12 +3,12 @@ From: abracodeabra1 <abrahampaul.elenjical@gmail.com>
 Date: Sat, 2 May 2026 19:13:11 +0530
 Subject: [PATCH] ggml : add LNS (Logarithmic Number System) backend
 
-Adds a new ggml backend that performs LLM inference using 16-bit
-Logarithmic Number System (xlns16) arithmetic via the xlnscpp library.
+Adds a new ggml backend that performs LLM inference using 32-bit
+Logarithmic Number System (xlns32) arithmetic via the xlnscpp library.
 
 Core ggml changes:
-- ggml.h: add GGML_TYPE_LNS16 = 41, bump GGML_TYPE_COUNT to 42
-- ggml.c: register LNS16 type traits; make type_traits[] non-const so
+- ggml.h: add GGML_TYPE_LNS32 = 41, bump GGML_TYPE_COUNT to 42
+- ggml.c: register LNS32 type traits; make type_traits[] non-const so
   ggml_backend_lns_reg() can patch to_float/from_float at runtime
 - CMakeLists.txt: add GGML_LNS option (default OFF)
 - src/CMakeLists.txt: add ggml_add_backend(LNS)
@@ -18,7 +18,7 @@ New backend (ggml/src/ggml-lns/):
 - Implements 13 ops: MUL_MAT, ADD, MUL, SCALE, SOFT_MAX, RMS_NORM,
   DIAG_MASK_INF, SILU, GELU, RELU, GET_ROWS, CPY/CONT/DUP, ROPE
 - Weights converted dynamically from quantized formats per row
-- Activations kept in xlns16 between ops; FP only at boundaries
+- Activations kept in xlns32 between ops; FP only at boundaries
 
 Build with: cmake .. -DGGML_LNS=ON -DGGML_METAL=OFF
 Requires xlnscpp at XLNSCPP_DIR (default: ../../../../xlnscpp)
@@ -85,7 +85,7 @@ index 669f66b65..3f3d25864 100644
          GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
          GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
 -        GGML_TYPE_COUNT   = 41,
-+        GGML_TYPE_LNS16   = 41, // 16-bit Logarithmic Number System (xlns16)
++        GGML_TYPE_LNS32   = 41, // 32-bit Logarithmic Number System (xlns32)
 +        GGML_TYPE_COUNT   = 42,
      };
  
@@ -138,10 +138,10 @@ index 000000000..20f712b75
 +    lns-ops.cpp
 +)
 +
-+# xlnscpp uses a header-inclusion model: #include "xlns16.cpp" with defines
-+target_compile_definitions(ggml-lns PRIVATE xlns16_table xlns16_alt)
++# xlnscpp uses a header-inclusion model: #include "xlns32.cpp" with defines
++target_compile_definitions(ggml-lns PRIVATE xlns32_alt)
 +
-+# Point to the xlnscpp source directory so #include "xlns16.cpp" resolves
++# Point to the xlnscpp source directory so #include "xlns32.cpp" resolves
 +target_include_directories(ggml-lns PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../../xlnscpp)
 diff --git a/ggml/src/ggml-lns/ggml-lns.cpp b/ggml/src/ggml-lns/ggml-lns.cpp
 new file mode 100644
@@ -320,7 +320,7 @@ index 000000000..92dfd2361
 +}
 +
 +static const char * ggml_backend_lns_device_get_description(ggml_backend_dev_t dev) {
-+    return "Logarithmic Number System (xlns16)";
++    return "Logarithmic Number System (xlns32)";
 +
 +    GGML_UNUSED(dev);
 +}
@@ -525,30 +525,30 @@ index 000000000..60cb791ae
 +#include <cstring>
 +#include <vector>
 +
-+// xlns16 defines — must be set before including xlns16.cpp
-+// (these are also set via CMake target_compile_definitions, but
-+//  we guard here for clarity)
-+#ifndef xlns16_table
-+#define xlns16_table
-+#endif
-+#ifndef xlns16_alt
-+#define xlns16_alt
++// xlns32 defines — must be set before including xlns32.cpp
++// (also set via CMake target_compile_definitions; guarded here for clarity).
++// xlns32 has no `xlns32_table` analogue of xlns16's 65536-entry table —
++// F32<->xlns32 conversion uses real log2/exp2 calls. xlns32_alt enables the
++// reduced-branching sb/db addition path. xlns32_ideal is NOT defined.
++#ifndef xlns32_alt
++#define xlns32_alt
 +#endif
 +
-+#include "xlns16.cpp"
++
++#include "xlns32.cpp"
 +
 +// ============================================================
-+// Helper: convert a row from any ggml type to xlns16
++// Helper: convert a row from any ggml type to xlns32
 +// ============================================================
 +
-+static void row_to_xlns16(const void * src, enum ggml_type type, xlns16 * dst, float * f32_scratch, int64_t n) {
++static void row_to_xlns32(const void * src, enum ggml_type type, xlns32 * dst, float * f32_scratch, int64_t n) {
 +    if (type == GGML_TYPE_F32) {
-+        xlns16_batch_from_float((const float *)src, dst, n);
++        xlns32_batch_from_float((const float *)src, dst, n);
 +    } else {
 +        const auto * traits = ggml_get_type_traits(type);
 +        GGML_ASSERT(traits->to_float != NULL);
 +        traits->to_float(src, f32_scratch, n);
-+        xlns16_batch_from_float(f32_scratch, dst, n);
++        xlns32_batch_from_float(f32_scratch, dst, n);
 +    }
 +}
 +
@@ -569,8 +569,8 @@ index 000000000..60cb791ae
 +    const auto * traits = ggml_get_type_traits(type);
 +
 +    std::vector<float>  f32_scratch(K);
-+    std::vector<xlns16> a_row_lns(K);
-+    std::vector<xlns16> b_row_lns(K);
++    std::vector<xlns32> a_row_lns(K);
++    std::vector<xlns32> b_row_lns(K);
 +
 +    const int64_t r2 = ne12 / ne02;
 +    const int64_t r3 = ne13 / ne03;
@@ -580,23 +580,23 @@ index 000000000..60cb791ae
 +            for (int64_t i1 = 0; i1 < ne11; i1++) {
 +                const float * b_row_f32 = (const float *)((const char *)src1->data
 +                    + i1*nb11 + i12*nb12 + i13*nb13);
-+                xlns16_batch_from_float(b_row_f32, b_row_lns.data(), K);
++                xlns32_batch_from_float(b_row_f32, b_row_lns.data(), K);
 +
 +                for (int64_t i0 = 0; i0 < ne01; i0++) {
 +                    const void * a_row_raw = (const char *)src0->data
 +                        + i0*nb01 + (i12/r2)*nb02 + (i13/r3)*nb03;
 +
 +                    if (type == GGML_TYPE_F32) {
-+                        xlns16_batch_from_float((const float *)a_row_raw, a_row_lns.data(), K);
++                        xlns32_batch_from_float((const float *)a_row_raw, a_row_lns.data(), K);
 +                    } else {
 +                        GGML_ASSERT(traits->to_float != NULL);
 +                        traits->to_float(a_row_raw, f32_scratch.data(), K);
-+                        xlns16_batch_from_float(f32_scratch.data(), a_row_lns.data(), K);
++                        xlns32_batch_from_float(f32_scratch.data(), a_row_lns.data(), K);
 +                    }
 +
-+                    xlns16 dot = xlns16_vec_dot(a_row_lns.data(), b_row_lns.data(), K);
++                    xlns32 dot = xlns32_vec_dot(a_row_lns.data(), b_row_lns.data(), K);
 +
-+                    float result = xlns162fp(dot);
++                    float result = xlns322fp(dot);
 +                    float * dst_ptr = (float *)((char *)dst->data
 +                        + i0*nb0 + i1*nb1 + i12*nb2 + i13*nb3);
 +                    *dst_ptr = result;
@@ -630,11 +630,11 @@ index 000000000..60cb791ae
 +                    + (i1 % ne11)*nb11 + (i2 % ne12)*nb12 + (i3 % ne13)*nb13);
 +                float * d = (float *)((char *)dst->data + i1*nb1 + i2*nb2 + i3*nb3);
 +
-+                // Convert to xlns16, add, convert back
++                // Convert to xlns32, add, convert back
 +                for (int64_t i0 = 0; i0 < ne00; i0++) {
-+                    xlns16 a = fp2xlns16(s0[i0]);
-+                    xlns16 b = fp2xlns16(s1[i0 % ne10]);
-+                    d[i0] = xlns162fp(xlns16_add(a, b));
++                    xlns32 a = fp2xlns32(s0[i0]);
++                    xlns32 b = fp2xlns32(s1[i0 % ne10]);
++                    d[i0] = xlns322fp(xlns32_add(a, b));
 +                }
 +            }
 +        }
@@ -665,9 +665,9 @@ index 000000000..60cb791ae
 +                float * d = (float *)((char *)dst->data + i1*nb1 + i2*nb2 + i3*nb3);
 +
 +                for (int64_t i0 = 0; i0 < ne00; i0++) {
-+                    xlns16 a = fp2xlns16(s0[i0]);
-+                    xlns16 b = fp2xlns16(s1[i0 % ne10]);
-+                    d[i0] = xlns162fp(xlns16_mul(a, b));
++                    xlns32 a = fp2xlns32(s0[i0]);
++                    xlns32 b = fp2xlns32(s1[i0 % ne10]);
++                    d[i0] = xlns322fp(xlns32_mul(a, b));
 +                }
 +            }
 +        }
@@ -687,19 +687,19 @@ index 000000000..60cb791ae
 +    memcpy(&s, (float *) dst->op_params + 0, sizeof(float));
 +    memcpy(&b, (float *) dst->op_params + 1, sizeof(float));
 +
-+    const xlns16 s_lns = fp2xlns16(s);
-+    const xlns16 b_lns = fp2xlns16(b);
++    const xlns32 s_lns = fp2xlns32(s);
++    const xlns32 b_lns = fp2xlns32(b);
 +
 +    const int64_t n = ggml_nelements(src0);
 +    const float * src_data = (const float *)src0->data;
 +    float * dst_data = (float *)dst->data;
 +
 +    for (int64_t i = 0; i < n; i++) {
-+        xlns16 val = xlns16_mul(fp2xlns16(src_data[i]), s_lns);
++        xlns32 val = xlns32_mul(fp2xlns32(src_data[i]), s_lns);
 +        if (b != 0.0f) {
-+            val = xlns16_add(val, b_lns);
++            val = xlns32_add(val, b_lns);
 +        }
-+        dst_data[i] = xlns162fp(val);
++        dst_data[i] = xlns322fp(val);
 +    }
 +}
 +
@@ -741,26 +741,26 @@ index 000000000..60cb791ae
 +                }
 +
 +                // Step 1: scale + mask, find max
-+                std::vector<xlns16> row(ne00);
-+                xlns16 max_val = fp2xlns16(-INFINITY);
++                std::vector<xlns32> row(ne00);
++                xlns32 max_val = fp2xlns32(-INFINITY);
 +                for (int64_t i0 = 0; i0 < ne00; i0++) {
 +                    float val = s0[i0] * scale;
 +                    if (mask) val += mask[i0];
-+                    row[i0] = fp2xlns16(val);
++                    row[i0] = fp2xlns32(val);
 +                    if (row[i0] > max_val) max_val = row[i0];
 +                }
 +
-+                // Step 2: exp(x - max) and sum, all in xlns16
-+                xlns16 sum = fp2xlns16(0.0f);
++                // Step 2: exp(x - max) and sum, all in xlns32
++                xlns32 sum = fp2xlns32(0.0f);
 +                for (int64_t i0 = 0; i0 < ne00; i0++) {
-+                    xlns16 diff = xlns16_sub(row[i0], max_val);
-+                    row[i0] = xlns16_exp(diff);
-+                    sum = xlns16_add(sum, row[i0]);
++                    xlns32 diff = xlns32_sub(row[i0], max_val);
++                    row[i0] = xlns32_exp(diff);
++                    sum = xlns32_add(sum, row[i0]);
 +                }
 +
 +                // Step 3: normalize
 +                for (int64_t i0 = 0; i0 < ne00; i0++) {
-+                    d[i0] = xlns162fp(xlns16_div(row[i0], sum));
++                    d[i0] = xlns322fp(xlns32_div(row[i0], sum));
 +                }
 +            }
 +        }
@@ -792,28 +792,28 @@ index 000000000..60cb791ae
 +                float * d = (float *)((char *)dst->data
 +                    + i1*dst->nb[1] + i2*dst->nb[2] + i3*dst->nb[3]);
 +
-+                // sum of squares in xlns16
-+                xlns16 sum_sq = fp2xlns16(0.0f);
++                // sum of squares in xlns32
++                xlns32 sum_sq = fp2xlns32(0.0f);
 +                for (int64_t i0 = 0; i0 < ne00; i0++) {
-+                    xlns16 x = fp2xlns16(s[i0]);
-+                    sum_sq = xlns16_add(sum_sq, xlns16_mul(x, x));
++                    xlns32 x = fp2xlns32(s[i0]);
++                    sum_sq = xlns32_add(sum_sq, xlns32_mul(x, x));
 +                }
 +
 +                // mean = sum_sq / n
-+                xlns16 mean = xlns16_div(sum_sq, fp2xlns16((float)ne00));
++                xlns32 mean = xlns32_div(sum_sq, fp2xlns32((float)ne00));
 +
 +                // rms = sqrt(mean + eps)
-+                xlns16 rms = xlns16_add(mean, fp2xlns16(eps));
-+                // sqrt via xlns16_float wrapper (uses overloaded sqrt)
-+                xlns16_float rms_f = float2xlns16_(xlns162fp(rms));
-+                xlns16_float sqrt_rms = sqrt(rms_f);
++                xlns32 rms = xlns32_add(mean, fp2xlns32(eps));
++                // sqrt via xlns32_float wrapper (uses overloaded sqrt)
++                xlns32_float rms_f = float2xlns32_(xlns322fp(rms));
++                xlns32_float sqrt_rms = sqrt(rms_f);
 +
 +                // inv_rms = 1 / sqrt_rms
-+                xlns16 inv_rms = xlns16_div(fp2xlns16(1.0f), xlns16_internal(sqrt_rms));
++                xlns32 inv_rms = xlns32_div(fp2xlns32(1.0f), xlns32_internal(sqrt_rms));
 +
 +                // normalize: d[i] = s[i] * inv_rms
 +                for (int64_t i0 = 0; i0 < ne00; i0++) {
-+                    d[i0] = xlns162fp(xlns16_mul(fp2xlns16(s[i0]), inv_rms));
++                    d[i0] = xlns322fp(xlns32_mul(fp2xlns32(s[i0]), inv_rms));
 +                }
 +            }
 +        }
@@ -866,7 +866,7 @@ index 000000000..60cb791ae
 +    float * d = (float *)dst->data;
 +
 +    for (int64_t i = 0; i < n; i++) {
-+        d[i] = xlns162fp(xlns16_silu(fp2xlns16(s[i])));
++        d[i] = xlns322fp(xlns32_silu(fp2xlns32(s[i])));
 +    }
 +}
 +
@@ -884,7 +884,7 @@ index 000000000..60cb791ae
 +    float * d = (float *)dst->data;
 +
 +    for (int64_t i = 0; i < n; i++) {
-+        d[i] = xlns162fp(xlns16_gelu(fp2xlns16(s[i])));
++        d[i] = xlns322fp(xlns32_gelu(fp2xlns32(s[i])));
 +    }
 +}
 +
@@ -902,7 +902,7 @@ index 000000000..60cb791ae
 +    float * d = (float *)dst->data;
 +
 +    for (int64_t i = 0; i < n; i++) {
-+        d[i] = xlns162fp(xlns16_relu(fp2xlns16(s[i])));
++        d[i] = xlns322fp(xlns32_relu(fp2xlns32(s[i])));
 +    }
 +}
 +
@@ -943,7 +943,7 @@ index 000000000..60cb791ae
 +        float * dst_row = (float *)((char *)dst->data
 +            + i10*dst->nb[1] + i11*dst->nb[2] + i12*dst->nb[3]);
 +
-+        // Dequantize to F32 (the conversion to/from xlns16 happens at
++        // Dequantize to F32 (the conversion to/from xlns32 happens at
 +        // computation boundaries, not here — GET_ROWS is data movement)
 +        if (type == GGML_TYPE_F32) {
 +            memcpy(dst_row, src_row, nc * sizeof(float));
@@ -1069,9 +1069,9 @@ index 000000000..60cb791ae
 +                    float cos_t = cosf(t);
 +                    float sin_t = sinf(t);
 +
-+                    // Convert cos/sin to xlns16 for the rotation
-+                    xlns16 c = fp2xlns16(cos_t);
-+                    xlns16 s_val = fp2xlns16(sin_t);
++                    // Convert cos/sin to xlns32 for the rotation
++                    xlns32 c = fp2xlns32(cos_t);
++                    xlns32 s_val = fp2xlns32(sin_t);
 +
 +                    int64_t i0_0, i0_1;
 +                    if (is_neox) {
@@ -1084,15 +1084,15 @@ index 000000000..60cb791ae
 +                        i0_1 = j + 1;
 +                    }
 +
-+                    xlns16 x0 = fp2xlns16(src_row[i0_0]);
-+                    xlns16 x1 = fp2xlns16(src_row[i0_1]);
++                    xlns32 x0 = fp2xlns32(src_row[i0_0]);
++                    xlns32 x1 = fp2xlns32(src_row[i0_1]);
 +
 +                    // Rotation: [cos -sin; sin cos] * [x0; x1]
-+                    xlns16 r0 = xlns16_sub(xlns16_mul(x0, c), xlns16_mul(x1, s_val));
-+                    xlns16 r1 = xlns16_add(xlns16_mul(x0, s_val), xlns16_mul(x1, c));
++                    xlns32 r0 = xlns32_sub(xlns32_mul(x0, c), xlns32_mul(x1, s_val));
++                    xlns32 r1 = xlns32_add(xlns32_mul(x0, s_val), xlns32_mul(x1, c));
 +
-+                    dst_row[i0_0] = xlns162fp(r0);
-+                    dst_row[i0_1] = xlns162fp(r1);
++                    dst_row[i0_0] = xlns322fp(r0);
++                    dst_row[i0_1] = xlns322fp(r1);
 +
 +                    t *= theta_scale;
 +                }
@@ -1147,10 +1147,10 @@ index 4c0764a0a..3b9c03394 100644
          .to_float                 = (ggml_to_float_t) dequantize_row_nvfp4,
          .from_float_ref           = (ggml_from_float_t)quantize_row_nvfp4_ref,
      },
-+    [GGML_TYPE_LNS16] = {
-+        .type_name                = "lns16",
++    [GGML_TYPE_LNS32] = {
++        .type_name                = "lns32",
 +        .blck_size                = 1,
-+        .type_size                = sizeof(uint16_t),
++        .type_size                = sizeof(uint32_t),
 +        .is_quantized             = false,
 +    },
      [GGML_TYPE_Q2_K] = {

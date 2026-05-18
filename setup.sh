@@ -158,9 +158,15 @@ if [ "$RUN_INFERENCE" -eq 1 ]; then
     echo "    Building llama-completion"
     mkdir -p "$LLAMA_DIR/build-lns"
     cd "$LLAMA_DIR/build-lns"
+    # cmake .. \
+    #     -DGGML_LNS=ON \
+    #     -DGGML_METAL=OFF \
+    #     -DCMAKE_BUILD_TYPE=Release \
+    #     -DXLNSCPP_DIR="$XLNSCPP_DIR"
     cmake .. \
         -DGGML_LNS=ON \
         -DGGML_METAL=OFF \
+        -DGGML_CPU_REPACK=OFF \
         -DCMAKE_BUILD_TYPE=Release \
         -DXLNSCPP_DIR="$XLNSCPP_DIR"
     cmake --build . --target llama-completion -j"$JOBS"

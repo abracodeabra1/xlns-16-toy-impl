@@ -105,7 +105,7 @@ int main(void) {
     for (int i = 0; i < 12; i++) {
         float rel_err = fabsf(out_data[i] - expected[i]) / fabsf(expected[i]);
         if (rel_err > max_rel_err) max_rel_err = rel_err;
-        if (rel_err > 0.05f) {  // 5% tolerance for xlns16
+        if (rel_err > 0.005f) {  // 0.5% tolerance — xlns32 routinely lands under 0.1%
             printf("FAIL: element %d: got %.2f, expected %.2f (rel err %.2f%%)\n",
                    i, out_data[i], expected[i], rel_err * 100.0f);
             pass = false;

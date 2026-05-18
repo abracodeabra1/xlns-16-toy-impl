@@ -19,7 +19,7 @@ index 669f66b65..3f3d25864 100644
          GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
          GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
 -        GGML_TYPE_COUNT   = 41,
-+        GGML_TYPE_LNS16   = 41, // 16-bit Logarithmic Number System (xlns16)
++        GGML_TYPE_LNS32   = 41, // 32-bit Logarithmic Number System (xlns32)
 +        GGML_TYPE_COUNT   = 42,
      };
  
@@ -69,10 +69,10 @@ index 4c0764a0a..3b9c03394 100644
          .to_float                 = (ggml_to_float_t) dequantize_row_nvfp4,
          .from_float_ref           = (ggml_from_float_t)quantize_row_nvfp4_ref,
      },
-+    [GGML_TYPE_LNS16] = {
-+        .type_name                = "lns16",
++    [GGML_TYPE_LNS32] = {
++        .type_name                = "lns32",
 +        .blck_size                = 1,
-+        .type_size                = sizeof(uint16_t),
++        .type_size                = sizeof(uint32_t),
 +        .is_quantized             = false,
 +    },
      [GGML_TYPE_Q2_K] = {

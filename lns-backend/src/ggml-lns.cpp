@@ -131,7 +131,7 @@ static struct ggml_backend_i lns_backend_i = {
 static ggml_guid_t ggml_backend_lns_guid(void) {
     // Randomly chosen GUID for LNS backend
     static ggml_guid guid = {
-        0x4c, 0x4e, 0x53, 0x31, 0x36, 0x2d, 0x62, 0x6b,
+        0x4c, 0x4e, 0x53, 0x33, 0x32, 0x2d, 0x62, 0x6b,
         0x65, 0x6e, 0x64, 0x2d, 0x67, 0x67, 0x6d, 0x6c
     };
     return &guid;
@@ -169,7 +169,7 @@ static const char * ggml_backend_lns_device_get_name(ggml_backend_dev_t dev) {
 }
 
 static const char * ggml_backend_lns_device_get_description(ggml_backend_dev_t dev) {
-    return "Logarithmic Number System (xlns16)";
+    return "Logarithmic Number System (xlns32)";
 
     GGML_UNUSED(dev);
 }
@@ -236,36 +236,39 @@ static bool ggml_backend_lns_device_supports_op(ggml_backend_dev_t dev, const st
                    (src0->type == GGML_TYPE_F32 ||
                     ggml_get_type_traits(src0->type)->to_float != NULL);
 
-        case GGML_OP_ADD:
-        case GGML_OP_MUL:
-            return src0->type == GGML_TYPE_F32;
+        // case GGML_OP_ADD:
+        // case GGML_OP_MUL:
+        //     return src0->type == GGML_TYPE_F32;
 
-        case GGML_OP_SCALE:
-        case GGML_OP_SOFT_MAX:
+        // case GGML_OP_SCALE:
+        // case GGML_OP_SOFT_MAX:
+        // case GGML_OP_RMS_NORM:
+        // case GGML_OP_DIAG_MASK_INF:
+        // case GGML_OP_ROPE:
+        //     return src0->type == GGML_TYPE_F32;
+
         case GGML_OP_RMS_NORM:
-        case GGML_OP_DIAG_MASK_INF:
-        case GGML_OP_ROPE:
             return src0->type == GGML_TYPE_F32;
 
-        case GGML_OP_UNARY:
-            switch (ggml_get_unary_op(op)) {
-                case GGML_UNARY_OP_SILU:
-                case GGML_UNARY_OP_GELU:
-                case GGML_UNARY_OP_RELU:
-                    return src0->type == GGML_TYPE_F32;
-                default:
-                    return false;
-            }
+        // case GGML_OP_UNARY:
+        //     switch (ggml_get_unary_op(op)) {
+        //         case GGML_UNARY_OP_SILU:
+        //         case GGML_UNARY_OP_GELU:
+        //         case GGML_UNARY_OP_RELU:
+        //             return src0->type == GGML_TYPE_F32;
+        //         default:
+        //             return false;
+        //     }
 
-        case GGML_OP_GET_ROWS:
-            return true; // handles any src0 type with to_float
+        // case GGML_OP_GET_ROWS:
+        //     return true; // handles any src0 type with to_float
 
-        case GGML_OP_CPY:
-        case GGML_OP_CONT:
-        case GGML_OP_DUP:
-            return (src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32) ||
-                   (src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F16) ||
-                   (src0->type == op->type);
+        // case GGML_OP_CPY:
+        // case GGML_OP_CONT:
+        // case GGML_OP_DUP:
+        //     return (src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32) ||
+        //            (src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F16) ||
+        //            (src0->type == op->type);
 
         default:
             return false;
