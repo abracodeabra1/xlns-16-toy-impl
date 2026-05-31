@@ -236,39 +236,49 @@ static bool ggml_backend_lns_device_supports_op(ggml_backend_dev_t dev, const st
                    (src0->type == GGML_TYPE_F32 ||
                     ggml_get_type_traits(src0->type)->to_float != NULL);
 
-        // case GGML_OP_ADD:
-        // case GGML_OP_MUL:
-        //     return src0->type == GGML_TYPE_F32;
+        case GGML_OP_ADD:
+        case GGML_OP_MUL:
+            return src0->type == GGML_TYPE_F32 &&
+                    (op->src[1]->type == GGML_TYPE_F32 ||
+                    op->src[1]->type == GGML_TYPE_LNS32);
 
-        // case GGML_OP_SCALE:
-        // case GGML_OP_SOFT_MAX:
-        // case GGML_OP_RMS_NORM:
-        // case GGML_OP_DIAG_MASK_INF:
-        // case GGML_OP_ROPE:
-        //     return src0->type == GGML_TYPE_F32;
-
+        case GGML_OP_SCALE:
         case GGML_OP_RMS_NORM:
+        case GGML_OP_DIAG_MASK_INF:
+        case GGML_OP_SOFT_MAX:
+        case GGML_OP_ROPE:
             return src0->type == GGML_TYPE_F32;
 
-        // case GGML_OP_UNARY:
-        //     switch (ggml_get_unary_op(op)) {
-        //         case GGML_UNARY_OP_SILU:
-        //         case GGML_UNARY_OP_GELU:
-        //         case GGML_UNARY_OP_RELU:
-        //             return src0->type == GGML_TYPE_F32;
-        //         default:
-        //             return false;
-        //     }
+        
 
-        // case GGML_OP_GET_ROWS:
-        //     return true; // handles any src0 type with to_float
+        case GGML_OP_UNARY:
+            switch (ggml_get_unary_op(op)) {
+                case GGML_UNARY_OP_SILU:
+                case GGML_UNARY_OP_GELU:
+                case GGML_UNARY_OP_RELU:
+                    return src0->type == GGML_TYPE_F32;
+                default:
+                    return false;
+            }
 
-        // case GGML_OP_CPY:
+        case GGML_OP_GET_ROWS:
+            return true; // handles any src0 type with to_float
+
+        // case GGML_OP_CPY:  
         // case GGML_OP_CONT:
         // case GGML_OP_DUP:
         //     return (src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32) ||
         //            (src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F16) ||
         //            (src0->type == op->type);
+        
+        // case GGML_OP_CPY:
+        // case GGML_OP_CONT:
+        // case GGML_OP_DUP:
+        //     return (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_F32  ) ||
+        //             (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_F16  ) ||
+        //             (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_F32  ) ||
+        //             (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_LNS32) ||
+        //             (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_LNS32);
 
         default:
             return false;

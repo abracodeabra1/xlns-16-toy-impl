@@ -1,6 +1,7 @@
 .exrc
 .cache
 .DS_Store
+scripts/
 
 outputs/
 __pycache__/

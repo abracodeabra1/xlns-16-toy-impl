@@ -63,6 +63,7 @@ static void row_to_xlns32(const void * src, enum ggml_type type, xlns32 * dst, f
 // ============================================================
 
 static inline xlns32 read_elem_xlns32(const void * row, int64_t i, enum ggml_type type) {
+    GGML_ASSERT(type == GGML_TYPE_LNS32 || type == GGML_TYPE_F32);
     if (type == GGML_TYPE_LNS32) {
         return ((const xlns32 *)row)[i];
     }
@@ -70,6 +71,7 @@ static inline xlns32 read_elem_xlns32(const void * row, int64_t i, enum ggml_typ
 }
 
 static inline void write_elem_xlns32(void * row, int64_t i, enum ggml_type type, xlns32 val) {
+    GGML_ASSERT(type == GGML_TYPE_LNS32 || type == GGML_TYPE_F32);
     if (type == GGML_TYPE_LNS32) {
         ((xlns32 *)row)[i] = val;
     } else {
@@ -226,6 +228,18 @@ void lns_scale(struct ggml_tensor * dst) {
     }
 }
 
+// fp2xlns32(-INFINITY) is undefined behaviour: the cast of +inf to int32 saturates
+// to INT_MIN on ARM/x86, producing 0xC0000000 which xlns322fp decodes as -1.0.
+// Use this sentinel (sign=1, abs=max ≈ -3.4e38) wherever -inf semantics are needed.
+static const xlns32 LNS32_NEG_INF = (xlns32)0xFFFFFFFFu;
+
+// Safe float->xlns32 that maps -inf (and any value past float range) to LNS32_NEG_INF
+// so that xlns32_exp(LNS32_NEG_INF - max) underflows cleanly to xlns32_zero.
+static inline xlns32 float_to_lns32_safe(float v) {
+    if (v <= -3.0e38f) return LNS32_NEG_INF;
+    return fp2xlns32(v);
+}
+
 // ============================================================
 // SOFT_MAX: dst = softmax(src0 * scale + mask)
 // ============================================================
@@ -260,15 +274,17 @@ void lns_soft_max(struct ggml_tensor * dst) {
                         + i1*src1->nb[1] + (i2 % ne12)*src1->nb[2] + i3*src1->nb[3]);
                 }
 
-                // Step 1: scale + mask, find max
+                // Step 1: scale + mask, find max.
+                // Use LNS32_NEG_INF instead of fp2xlns32(-INFINITY): the latter is UB
+                // and produces -1.0, causing masked positions to leak into the softmax.
                 std::vector<xlns32> row(ne00);
-                xlns32 max_val = fp2xlns32(-INFINITY);
+                xlns32 max_val = LNS32_NEG_INF;
                 for (int64_t i0 = 0; i0 < ne00; i0++) {
                     xlns32 v = read_elem_xlns32(s0_row, i0, src0->type);
                     float val = xlns322fp(v) * scale;
                     if (mask) val += mask[i0];
-                    row[i0] = fp2xlns32(val);
-                    if (row[i0] > max_val) max_val = row[i0];
+                    row[i0] = float_to_lns32_safe(val);
+                    if (xlns32_gt(row[i0], max_val)) max_val = row[i0];
                 }
 
                 // Step 2: exp(x - max) and sum, all in xlns32
