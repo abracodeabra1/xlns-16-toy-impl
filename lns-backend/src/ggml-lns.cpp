@@ -264,21 +264,17 @@ static bool ggml_backend_lns_device_supports_op(ggml_backend_dev_t dev, const st
         case GGML_OP_GET_ROWS:
             return true; // handles any src0 type with to_float
 
-        // case GGML_OP_CPY:  
-        // case GGML_OP_CONT:
-        // case GGML_OP_DUP:
-        //     return (src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32) ||
-        //            (src0->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F16) ||
-        //            (src0->type == op->type);
-        
-        // case GGML_OP_CPY:
-        // case GGML_OP_CONT:
-        // case GGML_OP_DUP:
-        //     return (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_F32  ) ||
-        //             (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_F16  ) ||
-        //             (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_F32  ) ||
-        //             (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_LNS32) ||
-        //             (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_LNS32);
+        // CPY/CONT/DUP: only claim ops where at least one side is LNS32.
+        // F32->F32, F32->F16, F16->F16 copies involve no LNS arithmetic and are
+        // handled correctly (and more safely) by the CPU backend.  In the current
+        // SmolLM2 graph no in-graph tensors carry GGML_TYPE_LNS32, so these cases
+        // are also never exercised yet — they are here for future use.
+        case GGML_OP_CPY:
+        case GGML_OP_CONT:
+        case GGML_OP_DUP:
+            return (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_F32  ) ||
+                   (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_LNS32) ||
+                   (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_LNS32);
 
         default:
             return false;
