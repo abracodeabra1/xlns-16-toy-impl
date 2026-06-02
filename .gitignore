@@ -6,3 +6,7 @@ scripts/
 outputs/
 __pycache__/
 *.gguf
+
+build/
+xlnscpp/
+tools/
