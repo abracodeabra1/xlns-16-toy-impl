@@ -6,8 +6,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-void lns32_to_f32_row(const void * GGML_RESTRICT src, float * GGML_RESTRICT dst, int64_t n);
-void f32_to_lns32_row(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t n);
+void lns16_to_f32_row(const void * GGML_RESTRICT src, float * GGML_RESTRICT dst, int64_t n);
+void f32_to_lns16_row(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t n);
 #ifdef __cplusplus
 }
 #endif

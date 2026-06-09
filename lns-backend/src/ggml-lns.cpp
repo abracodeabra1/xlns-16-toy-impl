@@ -143,7 +143,7 @@ static struct ggml_backend_i lns_backend_i = {
 static ggml_guid_t ggml_backend_lns_guid(void) {
     // Randomly chosen GUID for LNS backend
     static ggml_guid guid = {
-        0x4c, 0x4e, 0x53, 0x33, 0x32, 0x2d, 0x62, 0x6b,
+        0x4c, 0x4e, 0x53, 0x31, 0x36, 0x2d, 0x62, 0x6b,
         0x65, 0x6e, 0x64, 0x2d, 0x67, 0x67, 0x6d, 0x6c
     };
     return &guid;
@@ -181,7 +181,7 @@ static const char * ggml_backend_lns_device_get_name(ggml_backend_dev_t dev) {
 }
 
 static const char * ggml_backend_lns_device_get_description(ggml_backend_dev_t dev) {
-    return "Logarithmic Number System (xlns32)";
+    return "Logarithmic Number System (xlns16)";
 
     GGML_UNUSED(dev);
 }
@@ -273,8 +273,8 @@ static ggml_backend_lns_op_support ggml_backend_lns_check_op(const struct ggml_t
             return {
                 src0->type == GGML_TYPE_F32 &&
                     (op->src[1]->type == GGML_TYPE_F32 ||
-                     op->src[1]->type == GGML_TYPE_LNS32),
-                "binary_requires_src0_f32_and_src1_f32_or_lns32"
+                     op->src[1]->type == GGML_TYPE_LNS16),
+                "binary_requires_src0_f32_and_src1_f32_or_lns16"
             };
 
         case GGML_OP_SCALE:
@@ -327,19 +327,19 @@ static ggml_backend_lns_op_support ggml_backend_lns_check_op(const struct ggml_t
         case GGML_OP_GET_ROWS:
             return { true, "supported_get_rows" }; // handles any src0 type with to_float
 
-        // CPY/CONT/DUP: only claim ops where at least one side is LNS32.
+        // CPY/CONT/DUP: only claim ops where at least one side is LNS16.
         // F32->F32, F32->F16, F16->F16 copies involve no LNS arithmetic and are
         // handled correctly (and more safely) by the CPU backend.  In the current
-        // SmolLM2 graph no in-graph tensors carry GGML_TYPE_LNS32, so these cases
+        // SmolLM2 graph no in-graph tensors carry GGML_TYPE_LNS16, so these cases
         // are also never exercised yet — they are here for future use.
         case GGML_OP_CPY:
         case GGML_OP_CONT:
         case GGML_OP_DUP:
             return {
-                (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_F32  ) ||
-                (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_LNS32) ||
-                (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_LNS32),
-                "copy_requires_lns32_src_or_dst"
+                (src0->type == GGML_TYPE_LNS16 && op->type == GGML_TYPE_F32  ) ||
+                (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_LNS16) ||
+                (src0->type == GGML_TYPE_LNS16 && op->type == GGML_TYPE_LNS16),
+                "copy_requires_lns16_src_or_dst"
             };
 
         default:

@@ -22,8 +22,8 @@ integrate_lns_regex() {
         fi
     done
 
-    if grep -q 'GGML_TYPE_LNS32' "$header_file"; then
-        echo "    LNS already integrated in $root (GGML_TYPE_LNS32 present)"
+    if grep -q 'GGML_TYPE_LNS16' "$header_file"; then
+        echo "    LNS already integrated in $root (GGML_TYPE_LNS16 present)"
         return 0
     fi
 
@@ -40,13 +40,13 @@ integrate_lns_regex() {
         if (/^(\s+)GGML_TYPE_COUNT\s*=\s*(\d+)\s*,/) {
             my $indent = $1;
             my $n = $2;
-            $_ = "${indent}GGML_TYPE_LNS32   = $n, // 32-bit Logarithmic Number System (xlns32)\n"
+            $_ = "${indent}GGML_TYPE_LNS16   = $n, // 16-bit Logarithmic Number System (xlns16)\n"
                . "${indent}GGML_TYPE_COUNT   = " . ($n + 1) . ",\n";
         }
     ' "$header_file"
 
-    if ! grep -q 'GGML_TYPE_LNS32' "$header_file"; then
-        echo "ERROR: integrate-lns: failed to insert GGML_TYPE_LNS32 in ggml.h" >&2
+    if ! grep -q 'GGML_TYPE_LNS16' "$header_file"; then
+        echo "ERROR: integrate-lns: failed to insert GGML_TYPE_LNS16 in ggml.h" >&2
         return 1
     fi
 
@@ -83,14 +83,14 @@ integrate_lns_regex() {
         ' "$reg_file" || return 1
     fi
 
-    # ── ggml.c: LNS32 type traits after NVFP4 ────────────────────────────────
-    if ! grep -q 'GGML_TYPE_LNS32' "$ggml_c"; then
+    # ── ggml.c: LNS16 type traits after NVFP4 ────────────────────────────────
+    if ! grep -q 'GGML_TYPE_LNS16' "$ggml_c"; then
         perl -i -0pe '
             s/(\[GGML_TYPE_NVFP4\] = \{.*?\},)\n(\s+\[GGML_TYPE_Q2_K\] = \{)/$1
-    [GGML_TYPE_LNS32] = {
-        .type_name                = "lns32",
+    [GGML_TYPE_LNS16] = {
+        .type_name                = "lns16",
         .blck_size                = 1,
-        .type_size                = sizeof(uint32_t),
+        .type_size                = sizeof(uint16_t),
         .is_quantized             = false,
     },
 $2/s
@@ -105,22 +105,22 @@ integrate_lns_validate() {
     local root="$1"
     local errors=0
 
-    grep -q 'GGML_TYPE_LNS32' "$root/include/ggml.h" \
-        || { echo "ERROR: validate: GGML_TYPE_LNS32 missing from ggml.h" >&2; errors=1; }
+    grep -q 'GGML_TYPE_LNS16' "$root/include/ggml.h" \
+        || { echo "ERROR: validate: GGML_TYPE_LNS16 missing from ggml.h" >&2; errors=1; }
     grep -q 'option(GGML_LNS' "$root/CMakeLists.txt" \
         || { echo "ERROR: validate: GGML_LNS option missing from CMakeLists.txt" >&2; errors=1; }
     grep -q 'ggml_add_backend(LNS)' "$root/src/CMakeLists.txt" \
         || { echo "ERROR: validate: ggml_add_backend(LNS) missing" >&2; errors=1; }
     grep -q 'GGML_USE_LNS' "$root/src/ggml-backend-reg.cpp" \
         || { echo "ERROR: validate: GGML_USE_LNS missing from ggml-backend-reg.cpp" >&2; errors=1; }
-    grep -q 'GGML_TYPE_LNS32' "$root/src/ggml.c" \
-        || { echo "ERROR: validate: LNS32 traits missing from ggml.c" >&2; errors=1; }
+    grep -q 'GGML_TYPE_LNS16' "$root/src/ggml.c" \
+        || { echo "ERROR: validate: LNS16 traits missing from ggml.c" >&2; errors=1; }
 
     # Detect duplicate insertions
     local count
-    count=$(grep -c 'GGML_TYPE_LNS32' "$root/include/ggml.h" || true)
+    count=$(grep -c 'GGML_TYPE_LNS16' "$root/include/ggml.h" || true)
     if [ "$count" -ne 1 ]; then
-        echo "ERROR: validate: expected 1 GGML_TYPE_LNS32 in ggml.h, found $count" >&2
+        echo "ERROR: validate: expected 1 GGML_TYPE_LNS16 in ggml.h, found $count" >&2
         errors=1
     fi
     count=$(grep -c 'ggml_add_backend(LNS)' "$root/src/CMakeLists.txt" || true)

@@ -110,7 +110,7 @@ static bool run_mul_mat_test(ggml_backend_sched_t sched) {
     }
     printf(" ]\n\n");
 
-    bool pass = check_close("LNS mul mat", out_data, expected, 0.005f);
+    bool pass = check_close("LNS mul mat", out_data, expected, 0.006f);
     ggml_free(ctx);
     return pass;
 }
