@@ -126,15 +126,17 @@ backed by a lookup table (xlnscpp has no 2³² table), so element conversion
 goes through real `log2`/`exp2` calls and is noticeably slower per element
 than xlns16 — accuracy is the goal here, not throughput.
 
-### Core ggml changes required (not included here — apply to your ggml/llama.cpp clone)
+### Core ggml changes (applied automatically by `setup.sh`)
 
 | File | Change |
 |---|---|
-| `ggml/include/ggml.h` | Add `GGML_TYPE_LNS32 = 41`, bump `GGML_TYPE_COUNT` to 42 |
+| `ggml/include/ggml.h` | Insert `GGML_TYPE_LNS32` at the current `GGML_TYPE_COUNT` value, then bump `GGML_TYPE_COUNT` by 1 |
 | `ggml/src/ggml.c` | Register LNS32 type traits (blck_size=1, type_size=4, not quantized) |
 | `ggml/CMakeLists.txt` | Add `GGML_LNS` CMake option (default OFF) |
 | `ggml/src/CMakeLists.txt` | Add `ggml_add_backend(LNS)` |
 | `ggml/src/ggml-backend-reg.cpp` | Add `#ifdef GGML_USE_LNS` include and registration |
+
+`setup.sh` fetches latest upstream and applies these via regex (`scripts/integrate-lns.sh`), falling back to `patches/*.patch` if needed. Fallback pins are recorded in `patches/*-base-commit.txt`.
 
 ### Build
 
@@ -161,13 +163,11 @@ in after the first local build.
 ### End-to-end inference (SmolLM2-135M-Instruct, Q4_K_M)
 
 ```bash
-cd llama.cpp
-mkdir build-lns && cd build-lns
-cmake .. -DGGML_LNS=ON -DGGML_METAL=OFF -DCMAKE_BUILD_TYPE=Release
-cmake --build . --target llama-completion -j4
+# SmolLM2 .gguf is in the repo root; setup.sh uses it by default
+./setup.sh
 
-./bin/llama-completion -m ../models/SmolLM2-135M-Instruct-Q4_K_M.gguf \
-    -p "The capital of France is" -n 20 -fa 0
+# Or with Llama 3.2 1B as well
+MODEL_LLAMA32=./Llama-3.2-1B-Instruct-Q4_K_M.gguf ./setup.sh
 ```
 
 The backend runs all 13 ops across 30 transformer layers without crashing.
