@@ -378,7 +378,7 @@ void lns_diag_mask_inf(struct ggml_tensor * dst) {
     }
 
     if (dst->type == GGML_TYPE_LNS32) {
-        const xlns32 neg_inf = fp2xlns32(-INFINITY);
+        const xlns32 neg_inf = LNS32_NEG_INF;
         xlns32 * data = (xlns32 *)dst->data;
         for (int64_t k = 0; k < nz; k++) {
             for (int64_t j = 0; j < nr; j++) {
@@ -416,6 +416,62 @@ void lns_silu(struct ggml_tensor * dst) {
             ((xlns32 *)dst->data)[i] = r;
         } else {
             ((float *)dst->data)[i] = xlns322fp(r);
+        }
+    }
+}
+
+// ============================================================
+// SWIGLU: dst = silu(gate) * up
+// ============================================================
+
+void lns_swiglu(struct ggml_tensor * dst) {
+    const struct ggml_tensor * src0 = dst->src[0];
+    const struct ggml_tensor * src1 = dst->src[1];
+
+    GGML_ASSERT(ggml_is_contiguous_1(src0));
+    GGML_ASSERT(ggml_is_contiguous_1(dst));
+    GGML_ASSERT(src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_LNS32);
+    GGML_ASSERT(dst->type  == GGML_TYPE_F32 || dst->type  == GGML_TYPE_LNS32);
+
+    if (src1) {
+        GGML_ASSERT(ggml_is_contiguous_1(src1));
+        GGML_ASSERT(src1->type == GGML_TYPE_F32 || src1->type == GGML_TYPE_LNS32);
+    } else {
+        GGML_ASSERT(src0->ne[0] % 2 == 0);
+    }
+
+    const int64_t nc = src1 ? src0->ne[0] : src0->ne[0] / 2;
+    const int64_t nr = ggml_nrows(src0);
+
+    GGML_ASSERT(dst->ne[0] == nc);
+    GGML_ASSERT(ggml_nrows(dst) == nr);
+    if (src1) {
+        GGML_ASSERT(src1->ne[0] == nc);
+        GGML_ASSERT(ggml_nrows(src1) == nr);
+    }
+
+    const int32_t swapped = ggml_get_op_params_i32(dst, 1);
+    const size_t src0_elem_size = ggml_type_size(src0->type);
+    const size_t src1_elem_size = src1 ? ggml_type_size(src1->type) : src0_elem_size;
+
+    const char * src0_data = (const char *)src0->data;
+    const char * src1_data = src1 ? (const char *)src1->data : src0_data;
+    char * dst_data = (char *)dst->data;
+
+    for (int64_t i1 = 0; i1 < nr; i1++) {
+        const char * gate_row = src0_data + i1*src0->nb[1];
+        const char * up_row   = src1_data + i1*(src1 ? src1->nb[1] : src0->nb[1]);
+        char * dst_row = dst_data + i1*dst->nb[1];
+
+        if (!src1) {
+            gate_row += (swapped ? nc : 0) * src0_elem_size;
+            up_row   += (swapped ? 0 : nc) * src1_elem_size;
+        }
+
+        for (int64_t k = 0; k < nc; k++) {
+            const xlns32 gate = read_elem_xlns32(gate_row, k, src0->type);
+            const xlns32 up   = read_elem_xlns32(up_row,   k, src1 ? src1->type : src0->type);
+            write_elem_xlns32(dst_row, k, dst->type, xlns32_mul(xlns32_silu(gate), up));
         }
     }
 }

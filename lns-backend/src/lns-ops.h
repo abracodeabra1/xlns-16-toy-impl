@@ -27,6 +27,7 @@ void lns_diag_mask_inf(struct ggml_tensor * dst);
 
 // Phase 2 — activations
 void lns_silu(struct ggml_tensor * dst);
+void lns_swiglu(struct ggml_tensor * dst);
 void lns_gelu(struct ggml_tensor * dst);
 void lns_relu(struct ggml_tensor * dst);
 

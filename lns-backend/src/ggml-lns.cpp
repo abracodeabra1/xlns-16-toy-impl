@@ -4,6 +4,8 @@
 
 #include "lns-ops.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 // ============================================================
@@ -74,6 +76,14 @@ static enum ggml_status ggml_backend_lns_graph_compute(ggml_backend_t backend, s
                     case GGML_UNARY_OP_RELU: lns_relu(node); break;
                     default:
                         GGML_ABORT("%s: unsupported unary op\n", __func__);
+                }
+                break;
+
+            case GGML_OP_GLU:
+                switch (ggml_get_glu_op(node)) {
+                    case GGML_GLU_OP_SWIGLU: lns_swiglu(node); break;
+                    default:
+                        GGML_ABORT("%s: unsupported GLU op\n", __func__);
                 }
                 break;
 
@@ -220,7 +230,24 @@ static ggml_backend_buffer_t ggml_backend_lns_device_buffer_from_host_ptr(ggml_b
     GGML_UNUSED(max_tensor_size);
 }
 
-static bool ggml_backend_lns_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
+struct ggml_backend_lns_op_support {
+    bool supported;
+    const char * reason;
+};
+
+static const char * ggml_backend_lns_tensor_type_name(const struct ggml_tensor * tensor) {
+    return tensor ? ggml_type_name(tensor->type) : "null";
+}
+
+static bool ggml_backend_lns_audit_enabled(void) {
+    static const bool enabled = []() {
+        const char * env = std::getenv("LNS_OP_AUDIT");
+        return env != nullptr && env[0] != '\0' && strcmp(env, "0") != 0;
+    }();
+    return enabled;
+}
+
+static ggml_backend_lns_op_support ggml_backend_lns_check_op(const struct ggml_tensor * op) {
     const struct ggml_tensor * src0 = op->src[0];
 
     switch (op->op) {
@@ -229,40 +256,74 @@ static bool ggml_backend_lns_device_supports_op(ggml_backend_dev_t dev, const st
         case GGML_OP_VIEW:
         case GGML_OP_PERMUTE:
         case GGML_OP_TRANSPOSE:
-            return true;
+            return { true, "supported_view_or_noop" };
 
         case GGML_OP_MUL_MAT:
-            return op->src[1]->type == GGML_TYPE_F32 &&
-                   (src0->type == GGML_TYPE_F32 ||
-                    ggml_get_type_traits(src0->type)->to_float != NULL);
+            return {
+                op->src[1]->type == GGML_TYPE_F32 &&
+                    (src0->type == GGML_TYPE_F32 ||
+                     ggml_get_type_traits(src0->type)->to_float != NULL),
+                "mul_mat_requires_src1_f32_and_convertible_src0"
+            };
 
         case GGML_OP_ADD:
         case GGML_OP_MUL:
-            return src0->type == GGML_TYPE_F32 &&
+            return {
+                src0->type == GGML_TYPE_F32 &&
                     (op->src[1]->type == GGML_TYPE_F32 ||
-                    op->src[1]->type == GGML_TYPE_LNS32);
+                     op->src[1]->type == GGML_TYPE_LNS32),
+                "binary_requires_src0_f32_and_src1_f32_or_lns32"
+            };
 
         case GGML_OP_SCALE:
         case GGML_OP_RMS_NORM:
         case GGML_OP_DIAG_MASK_INF:
         case GGML_OP_SOFT_MAX:
         case GGML_OP_ROPE:
-            return src0->type == GGML_TYPE_F32;
-
-        
+            return { src0->type == GGML_TYPE_F32, "unary_like_requires_src0_f32" };
 
         case GGML_OP_UNARY:
             switch (ggml_get_unary_op(op)) {
                 case GGML_UNARY_OP_SILU:
                 case GGML_UNARY_OP_GELU:
                 case GGML_UNARY_OP_RELU:
-                    return src0->type == GGML_TYPE_F32;
+                    return { src0->type == GGML_TYPE_F32, "unary_activation_requires_src0_f32" };
                 default:
-                    return false;
+                    return { false, "unsupported_unary_op" };
             }
 
+        case GGML_OP_GLU: {
+            const struct ggml_tensor * src1 = op->src[1];
+            if (ggml_get_glu_op(op) != GGML_GLU_OP_SWIGLU) {
+                return { false, "unsupported_glu_op" };
+            }
+            if (src0->type != GGML_TYPE_F32 || op->type != GGML_TYPE_F32) {
+                return { false, "swiglu_requires_f32_src0_and_dst" };
+            }
+            if (!ggml_is_contiguous_1(src0) || !ggml_is_contiguous_1(op)) {
+                return { false, "swiglu_requires_contiguous_rows" };
+            }
+            if (src1) {
+                return {
+                    src1->type == GGML_TYPE_F32 &&
+                        ggml_is_contiguous_1(src1) &&
+                        src1->ne[0] == src0->ne[0] &&
+                        ggml_nrows(src1) == ggml_nrows(src0) &&
+                        op->ne[0] == src0->ne[0] &&
+                        ggml_nrows(op) == ggml_nrows(src0),
+                    "swiglu_split_requires_matching_f32_contiguous_inputs"
+                };
+            }
+            return {
+                src0->ne[0] % 2 == 0 &&
+                    op->ne[0] == src0->ne[0] / 2 &&
+                    ggml_nrows(op) == ggml_nrows(src0),
+                "swiglu_fused_requires_even_src0_and_half_width_dst"
+            };
+        }
+
         case GGML_OP_GET_ROWS:
-            return true; // handles any src0 type with to_float
+            return { true, "supported_get_rows" }; // handles any src0 type with to_float
 
         // CPY/CONT/DUP: only claim ops where at least one side is LNS32.
         // F32->F32, F32->F16, F16->F16 copies involve no LNS arithmetic and are
@@ -272,15 +333,50 @@ static bool ggml_backend_lns_device_supports_op(ggml_backend_dev_t dev, const st
         case GGML_OP_CPY:
         case GGML_OP_CONT:
         case GGML_OP_DUP:
-            return (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_F32  ) ||
-                   (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_LNS32) ||
-                   (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_LNS32);
+            return {
+                (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_F32  ) ||
+                (src0->type == GGML_TYPE_F32   && op->type == GGML_TYPE_LNS32) ||
+                (src0->type == GGML_TYPE_LNS32 && op->type == GGML_TYPE_LNS32),
+                "copy_requires_lns32_src_or_dst"
+            };
 
         default:
-            return false;
+            return { false, "unsupported_op" };
+    }
+}
+
+static void ggml_backend_lns_audit_op(const struct ggml_tensor * op, ggml_backend_lns_op_support support) {
+    if (!ggml_backend_lns_audit_enabled()) {
+        return;
     }
 
+    std::fprintf(stderr,
+        "{\"event\":\"lns_supports_op\","
+        "\"op\":\"%s\","
+        "\"desc\":\"%s\","
+        "\"supported\":%s,"
+        "\"dst_type\":\"%s\","
+        "\"src_types\":[\"%s\",\"%s\",\"%s\",\"%s\"],"
+        "\"shape\":[%lld,%lld,%lld,%lld],"
+        "\"reason\":\"%s\"}\n",
+        ggml_op_name(op->op),
+        ggml_op_desc(op),
+        support.supported ? "true" : "false",
+        ggml_type_name(op->type),
+        ggml_backend_lns_tensor_type_name(op->src[0]),
+        ggml_backend_lns_tensor_type_name(op->src[1]),
+        ggml_backend_lns_tensor_type_name(op->src[2]),
+        ggml_backend_lns_tensor_type_name(op->src[3]),
+        (long long) op->ne[0], (long long) op->ne[1], (long long) op->ne[2], (long long) op->ne[3],
+        support.reason);
+}
+
+static bool ggml_backend_lns_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
     GGML_UNUSED(dev);
+
+    const ggml_backend_lns_op_support support = ggml_backend_lns_check_op(op);
+    ggml_backend_lns_audit_op(op, support);
+    return support.supported;
 }
 
 static bool ggml_backend_lns_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
