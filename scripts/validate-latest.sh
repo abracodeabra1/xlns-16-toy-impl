@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# validate-latest.sh — one-shot gate: test LNS backend against latest ggml + llama.cpp HEAD.
+# validate-latest.sh — one-shot gate: test LNS backend against latest ggml, llama.cpp, and xlnscpp HEAD.
 #
 # Usage:
 #   MODEL_SMOLLM=/path/SmolLM2-135M-Instruct-Q4_K_M.gguf \
@@ -12,6 +12,7 @@ set -e
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 XLNSCPP_DIR="$REPO_ROOT/xlnscpp"
+XLNSCPP_BASE_COMMIT="$(cat "$REPO_ROOT/patches/xlnscpp-base-commit.txt")"
 BUILD_DIR="$REPO_ROOT/build/validate-latest"
 LOG_FILE="$BUILD_DIR/validate-latest.log"
 
@@ -53,10 +54,26 @@ copy_backend() {
 # shellcheck source=integrate-lns.sh
 source "$REPO_ROOT/scripts/integrate-lns.sh"
 
-log "==> Initialising xlnscpp submodule"
-git -C "$REPO_ROOT" submodule update --init
+prepare_xlnscpp() {
+    if [ ! -d "$XLNSCPP_DIR/.git" ]; then
+        git -C "$REPO_ROOT" submodule update --init
+    fi
+    cd "$XLNSCPP_DIR"
+    git fetch origin
+    git reset --hard origin/main
+    XLNSCPP_SHA=$(git rev-parse HEAD)
+    log "    xlnscpp at $XLNSCPP_SHA"
+}
 
-# ── Standalone ggml unit test ────────────────────────────────────────────────
+fallback_xlnscpp() {
+    log "    xlnscpp latest failed; using pinned commit"
+    cd "$XLNSCPP_DIR"
+    git reset --hard "$XLNSCPP_BASE_COMMIT"
+    XLNSCPP_SHA=$(git rev-parse HEAD)
+    log "    xlnscpp at $XLNSCPP_SHA"
+}
+
+run_validation() {
 
 GGML_DIR="$BUILD_DIR/ggml"
 log ""
@@ -150,10 +167,21 @@ log "    PASS: Llama 3.2 1B inference"
 
 log ""
 log "==> All validation steps passed"
+log "    xlnscpp:   $XLNSCPP_SHA"
 log "    ggml:      $GGML_SHA"
 log "    llama.cpp: $LLAMA_SHA"
 log "    Log: $LOG_FILE"
 
 # Write SHAs for patch regeneration
+echo "$XLNSCPP_SHA" > "$REPO_ROOT/patches/xlnscpp-base-commit.txt.new"
 echo "$GGML_SHA" > "$REPO_ROOT/patches/ggml-base-commit.txt.new"
 echo "$LLAMA_SHA" > "$REPO_ROOT/patches/llama-base-commit.txt.new"
+}
+
+log "==> Preparing xlnscpp"
+prepare_xlnscpp
+
+if ! run_validation; then
+    fallback_xlnscpp
+    run_validation
+fi

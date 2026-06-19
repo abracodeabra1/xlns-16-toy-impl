@@ -100,26 +100,33 @@ void lns_mul_mat(struct ggml_tensor * dst) {
 
     std::vector<float>  f32_scratch(K);
     std::vector<xlns16> a_row_lns(K);
-    std::vector<xlns16> b_row_lns(K);
+    // Pre-converted activation rows for one (i12,i13) batch slice: ne11 rows of K.
+    // Converting src1 once per slice (rather than once per weight row) so this avoids
+    // re-converting each weight row ne11 times.
+    std::vector<xlns16> b_lns((size_t)ne11 * (size_t)K);
 
     const int64_t r2 = ne12 / ne02;
     const int64_t r3 = ne13 / ne03;
 
     for (int64_t i13 = 0; i13 < ne13; i13++) {
         for (int64_t i12 = 0; i12 < ne12; i12++) {
+            // Convert all src1 (activation) rows for this slice just once.
             for (int64_t i1 = 0; i1 < ne11; i1++) {
-                // src1 (activations): F32 or LNS16
                 const void * b_row_raw = (const char *)src1->data
                     + i1*nb11 + i12*nb12 + i13*nb13;
-                row_to_xlns16(b_row_raw, src1->type, b_row_lns.data(), f32_scratch.data(), K);
+                row_to_xlns16(b_row_raw, src1->type, b_lns.data() + (size_t)i1 * (size_t)K,
+                              f32_scratch.data(), K);
+            }
 
-                for (int64_t i0 = 0; i0 < ne01; i0++) {
-                    // src0 (weights): any supported type — dynamic conversion, no caching
-                    const void * a_row_raw = (const char *)src0->data
-                        + i0*nb01 + (i12/r2)*nb02 + (i13/r3)*nb03;
-                    row_to_xlns16(a_row_raw, type0, a_row_lns.data(), f32_scratch.data(), K);
+            for (int64_t i0 = 0; i0 < ne01; i0++) {
+                // src0 (weights): any supported type — convert each weight row only once per slice.
+                const void * a_row_raw = (const char *)src0->data
+                    + i0*nb01 + (i12/r2)*nb02 + (i13/r3)*nb03;
+                row_to_xlns16(a_row_raw, type0, a_row_lns.data(), f32_scratch.data(), K);
 
-                    xlns16 dot = xlns16_vec_dot(a_row_lns.data(), b_row_lns.data(), K);
+                for (int64_t i1 = 0; i1 < ne11; i1++) {
+                    xlns16 dot = xlns16_vec_dot(a_row_lns.data(),
+                                                b_lns.data() + (size_t)i1 * (size_t)K, K);
 
                     // Write result: keep as xlns16 if dst is LNS16, else convert to F32
                     void * dst_ptr = (char *)dst->data + i0*nb0 + i1*nb1 + i12*nb2 + i13*nb3;
@@ -202,6 +209,10 @@ void lns_mul(struct ggml_tensor * dst) {
 void lns_scale(struct ggml_tensor * dst) {
     const struct ggml_tensor * src0 = dst->src[0];
 
+    GGML_ASSERT(ggml_is_contiguous(src0));
+    GGML_ASSERT(ggml_is_contiguous(dst));
+    GGML_ASSERT(ggml_are_same_shape(src0, dst));
+
     float s, b;
     memcpy(&s, (float *) dst->op_params + 0, sizeof(float));
     memcpy(&b, (float *) dst->op_params + 1, sizeof(float));
@@ -242,6 +253,13 @@ static inline xlns16 float_to_lns16_safe(float v) {
     return fp2xlns16(v);
 }
 
+// Add an F32 mask entry to an xlns16 value (mask tensor is always F32 in ggml).
+static inline xlns16 xlns16_add_mask_f32(xlns16 v, float m) {
+    if (m <= -3.0e38f) return LNS16_NEG_INF;
+    if (m == 0.0f) return v;
+    return xlns16_add(v, fp2xlns16(m));
+}
+
 // ============================================================
 // SOFT_MAX: dst = softmax(src0 * scale + mask)
 // ============================================================
@@ -249,6 +267,9 @@ static inline xlns16 float_to_lns16_safe(float v) {
 void lns_soft_max(struct ggml_tensor * dst) {
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1]; // mask (optional)
+
+    // TODO: sink support if required? (models such as openai MoE, MiMo), Llama, SmolLM, don't require them
+    // TODO: implement ALiBi -- similar to sinks, not required by current set of models
 
     float scale, max_bias;
     memcpy(&scale,    (float *) dst->op_params + 0, sizeof(float));
@@ -258,6 +279,8 @@ void lns_soft_max(struct ggml_tensor * dst) {
     const int64_t ne01 = src0->ne[1]; // num queries
     const int64_t ne02 = src0->ne[2];
     const int64_t ne03 = src0->ne[3];
+
+    const xlns16 scale_lns = fp2xlns16(scale);
 
     // For now, ignore ALiBi (max_bias). Implement basic softmax.
     for (int64_t i3 = 0; i3 < ne03; i3++) {
@@ -283,9 +306,19 @@ void lns_soft_max(struct ggml_tensor * dst) {
                 xlns16 max_val = LNS16_NEG_INF;
                 for (int64_t i0 = 0; i0 < ne00; i0++) {
                     xlns16 v = read_elem_xlns16(s0_row, i0, src0->type);
-                    float val = xlns162fp(v) * scale;
-                    if (mask) val += mask[i0];
-                    row[i0] = float_to_lns16_safe(val);
+
+                    // --- float scale+mask path (previous implementation; uncomment to compare) ---
+                    // float val = xlns162fp(v) * scale;
+                    // if (mask) val += mask[i0];
+                    // row[i0] = float_to_lns16_safe(val);
+
+                    // --- pure-xlns16 scale+mask path ---
+                    if (v != LNS16_NEG_INF) {
+                        v = xlns16_mul(v, scale_lns);
+                        if (mask) v = xlns16_add_mask_f32(v, mask[i0]);
+                    }
+                    row[i0] = v;
+
                     if (xlns16_gt(row[i0], max_val)) max_val = row[i0];
                 }
 
