@@ -11,8 +11,9 @@
 #   MODEL_LLAMA32   — Llama-3.2-1B-Instruct-Q4_K_M.gguf
 #   MODEL           — alias for MODEL_SMOLLM (backward compatible)
 #
-# Upstream integration: always fetches origin/master, applies regex edits first,
-# falls back to pinned patches in patches/ if regex or build fails.
+# Upstream integration: always fetches latest ggml, llama.cpp, and xlnscpp,
+# applies regex edits first for ggml/llama.cpp, falls back to pinned commits
+# in patches/ if integration or build fails.
 
 set -e
 
@@ -21,6 +22,7 @@ XLNSCPP_DIR="$REPO_ROOT/xlnscpp"
 BUILD_DIR="$REPO_ROOT/build"
 LLAMA_BASE_COMMIT="$(cat "$REPO_ROOT/patches/llama-base-commit.txt")"
 GGML_BASE_COMMIT="$(cat "$REPO_ROOT/patches/ggml-base-commit.txt")"
+XLNSCPP_BASE_COMMIT="$(cat "$REPO_ROOT/patches/xlnscpp-base-commit.txt")"
 
 MODEL_SMOLLM="${MODEL_SMOLLM:-${MODEL:-$REPO_ROOT/SmolLM2-135M-Instruct-Q4_K_M.gguf}}"
 MODEL_LLAMA32="${MODEL_LLAMA32:-}"
@@ -92,9 +94,26 @@ copy_backend() {
 
 fetch_latest() {
     local repo_dir="$1"
+    local branch="${2:-master}"
     cd "$repo_dir"
     git fetch origin
-    git reset --hard origin/master
+    git reset --hard "origin/$branch"
+    echo "    at $(git rev-parse --short HEAD)"
+}
+
+prepare_xlnscpp() {
+    if [ ! -d "$XLNSCPP_DIR/.git" ]; then
+        echo "    Initialising xlnscpp submodule..."
+        git -C "$REPO_ROOT" submodule update --init
+    fi
+    echo "    Fetching latest xlnscpp"
+    fetch_latest "$XLNSCPP_DIR" main
+}
+
+fallback_xlnscpp() {
+    echo "    xlnscpp latest failed; using pinned commit"
+    cd "$XLNSCPP_DIR"
+    git reset --hard "$XLNSCPP_BASE_COMMIT"
     echo "    at $(git rev-parse --short HEAD)"
 }
 
@@ -153,68 +172,75 @@ run_inference() {
         -no-cnv
 }
 
+run_build_and_test() {
+    # ── Unit test (standalone ggml) ───────────────────────────────────────────
+
+    if [ "$RUN_UNIT_TEST" -eq 1 ]; then
+        echo ""
+        echo "==> Setting up standalone ggml for unit test"
+
+        GGML_DIR="$BUILD_DIR/ggml"
+        prepare_ggml "$GGML_DIR"
+        prepare_ggml_test_files "$GGML_DIR"
+
+        echo "    Building"
+        mkdir -p "$GGML_DIR/build-lns"
+        cd "$GGML_DIR/build-lns"
+        cmake .. \
+            -DGGML_LNS=ON \
+            -DGGML_METAL=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DXLNSCPP_DIR="$XLNSCPP_DIR"
+        cmake --build . --target test-lns-backend -j"$JOBS"
+
+        echo ""
+        echo "==> Running test-lns-backend"
+        ./bin/test-lns-backend
+    fi
+
+    # ── End-to-end inference (llama.cpp) ─────────────────────────────────────
+
+    if [ "$RUN_INFERENCE" -eq 1 ]; then
+        echo ""
+        echo "==> Setting up llama.cpp for end-to-end LNS inference"
+
+        LLAMA_DIR="$BUILD_DIR/llama.cpp"
+        prepare_llama "$LLAMA_DIR"
+
+        echo "    Building llama-completion"
+        mkdir -p "$LLAMA_DIR/build-lns"
+        cd "$LLAMA_DIR/build-lns"
+        cmake .. \
+            -DGGML_LNS=ON \
+            -DGGML_METAL=OFF \
+            -DGGML_CPU_REPACK=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DXLNSCPP_DIR="$XLNSCPP_DIR"
+        cmake --build . --target llama-completion -j"$JOBS"
+
+        LLAMA_BIN="$LLAMA_DIR/build-lns/bin/llama-completion"
+
+        if [ -n "$MODEL_SMOLLM" ]; then
+            run_inference "SmolLM2-135M-Instruct" "$MODEL_SMOLLM" "$LLAMA_BIN"
+        fi
+        if [ -n "$MODEL_LLAMA32" ]; then
+            run_inference "Llama-3.2-1B-Instruct" "$MODEL_LLAMA32" "$LLAMA_BIN"
+        fi
+    fi
+}
+
 # ── Prerequisites ─────────────────────────────────────────────────────────────
 
 check_deps
 
-echo "==> Initialising xlnscpp submodule"
-git -C "$REPO_ROOT" submodule update --init
+echo "==> Preparing xlnscpp"
+prepare_xlnscpp
 
 mkdir -p "$BUILD_DIR"
 
-# ── Unit test (standalone ggml) ───────────────────────────────────────────────
-
-if [ "$RUN_UNIT_TEST" -eq 1 ]; then
-    echo ""
-    echo "==> Setting up standalone ggml for unit test"
-
-    GGML_DIR="$BUILD_DIR/ggml"
-    prepare_ggml "$GGML_DIR"
-    prepare_ggml_test_files "$GGML_DIR"
-
-    echo "    Building"
-    mkdir -p "$GGML_DIR/build-lns"
-    cd "$GGML_DIR/build-lns"
-    cmake .. \
-        -DGGML_LNS=ON \
-        -DGGML_METAL=OFF \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DXLNSCPP_DIR="$XLNSCPP_DIR"
-    cmake --build . --target test-lns-backend -j"$JOBS"
-
-    echo ""
-    echo "==> Running test-lns-backend"
-    ./bin/test-lns-backend
-fi
-
-# ── End-to-end inference (llama.cpp) ─────────────────────────────────────────
-
-if [ "$RUN_INFERENCE" -eq 1 ]; then
-    echo ""
-    echo "==> Setting up llama.cpp for end-to-end LNS inference"
-
-    LLAMA_DIR="$BUILD_DIR/llama.cpp"
-    prepare_llama "$LLAMA_DIR"
-
-    echo "    Building llama-completion"
-    mkdir -p "$LLAMA_DIR/build-lns"
-    cd "$LLAMA_DIR/build-lns"
-    cmake .. \
-        -DGGML_LNS=ON \
-        -DGGML_METAL=OFF \
-        -DGGML_CPU_REPACK=OFF \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DXLNSCPP_DIR="$XLNSCPP_DIR"
-    cmake --build . --target llama-completion -j"$JOBS"
-
-    LLAMA_BIN="$LLAMA_DIR/build-lns/bin/llama-completion"
-
-    if [ -n "$MODEL_SMOLLM" ]; then
-        run_inference "SmolLM2-135M-Instruct" "$MODEL_SMOLLM" "$LLAMA_BIN"
-    fi
-    if [ -n "$MODEL_LLAMA32" ]; then
-        run_inference "Llama-3.2-1B-Instruct" "$MODEL_LLAMA32" "$LLAMA_BIN"
-    fi
+if ! run_build_and_test; then
+    fallback_xlnscpp
+    run_build_and_test
 fi
 
 echo ""

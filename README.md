@@ -170,16 +170,6 @@ in after the first local build.
 MODEL_LLAMA32=./Llama-3.2-1B-Instruct-Q4_K_M.gguf ./setup.sh
 ```
 
-The backend runs all 13 ops across 30 transformer layers without crashing.
-xlns32 has roughly 23 fractional bits — comparable to FP32 — so generated
-text is expected to be coherent and close to the FP32 baseline (this is the
-explicit motivation for the xlns32 variant: validate that LNS is a viable
-arithmetic for LLMs when given enough precision, in contrast to the xlns16
-sibling whose output is incoherent across 30 layers).
-
-Per-token throughput is lower than the xlns16 sibling because every
-F32↔xlns32 conversion goes through real `log2`/`exp2` calls rather than a
-65 536-entry lookup table.
 
 ### Supported operations
 
