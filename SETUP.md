@@ -9,10 +9,12 @@
 
 **1. Clone and initialise**
 ```bash
-git clone https://github.com/abracodeabra1/xlns-gsoc-application
-cd xlns-gsoc-application
-git submodule update --init
+git clone https://github.com/abracodeabra1/xlns-16-toy-impl
+cd xlns-16-toy-impl
+git submodule update --init   # optional — as setup.sh also initialises xlnscpp
 ```
+
+`setup.sh` will then advance `xlnscpp/` to latest `origin/main` (falling back to the pinned commit in `patches/xlnscpp-base-commit.txt` if the build fails).
 
 **2. Download the model**
 
@@ -45,9 +47,17 @@ MODEL_LLAMA32=/path/to/Llama-3.2-1B-Instruct-Q4_K_M.gguf \
 
 ## Upstream integration
 
-`setup.sh` always fetches latest `origin/master` from [ggml](https://github.com/ggml-org/ggml) and [llama.cpp](https://github.com/ggml-org/llama.cpp), then applies LNS hooks via regex edits in [`scripts/integrate-lns.sh`](scripts/integrate-lns.sh). If regex integration or the subsequent build fails, it falls back to the pinned patches in `patches/` (verified-good commits in `patches/*-base-commit.txt`).
+`setup.sh` always fetches latest upstream for all three dependencies:
 
-To re-validate against latest upstream before refreshing the fallback pins:
+| Dependency | Branch | Integration |
+|---|---|---|
+| [xlnscpp](https://github.com/xlnsresearch/xlnscpp) | `origin/main` | submodule init + `git reset --hard` |
+| [ggml](https://github.com/ggml-org/ggml) | `origin/master` | regex edits in [`scripts/integrate-lns.sh`](scripts/integrate-lns.sh) |
+| [llama.cpp](https://github.com/ggml-org/llama.cpp) | `origin/master` | regex edits in [`scripts/integrate-lns.sh`](scripts/integrate-lns.sh) |
+
+If regex integration (ggml/llama.cpp) or the subsequent build fails, it falls back to the pinned patches in `patches/` (verified-good commits in `patches/*-base-commit.txt`). If the build fails against latest xlnscpp, it falls back to `patches/xlnscpp-base-commit.txt`.
+
+To re-validate all three against latest upstream before refreshing the fallback pins:
 ```bash
 ./scripts/validate-latest.sh
 ```
@@ -58,7 +68,7 @@ To re-validate against latest upstream before refreshing the fallback pins:
 |------|----------|
 | `lns-backend/` | LNS backend source (`ggml-lns.cpp`, `lns-ops.cpp`, `ggml-lns.h`) and unit test |
 | `challenges/` | Source code for challenges 3–5 |
-| `xlnscpp/` | xlnscpp submodule (16-bit and 32-bit LNS library) |
-| `patches/` | Fallback patches + pinned base commits for ggml and llama.cpp |
+| `xlnscpp/` | xlnscpp submodule (16-bit and 32-bit LNS library); `setup.sh` advances to latest `main` |
+| `patches/` | Fallback patches + pinned base commits for xlnscpp, ggml, and llama.cpp |
 | `scripts/` | `integrate-lns.sh` (regex integration), `validate-latest.sh` (compatibility gate) |
 | `setup.sh` | Automated build and run script |
