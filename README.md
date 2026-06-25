@@ -14,12 +14,6 @@ See [SETUP.md](SETUP.md) for full instructions.
 ## Repository structure
 
 ```
-challenges/
-  challenge1/   Run xlns16test and xlns32test from xlnscpp (no new code written)
-  challenge2/   ggml 32-bit FP matrix multiply — simple-ctx and simple-backend examples
-  challenge3/   Standalone C++ FP matrix multiply (nested-loop reference)
-  challenge4/   Challenge 3 repeated with internal xlns32 arithmetic
-  challenge5/   Challenge 3 repeated with internal xlns16 arithmetic
 
 lns-backend/
   include/      Public API header  (ggml-lns.h)
@@ -47,72 +41,6 @@ This populates `xlnscpp/` so that `#include "xlns16.cpp"` and `#include "xlns32.
 
 ---
 
-## Challenges
-
-### Challenge 1 — Run xlns16test and xlns32test
-
-These programs are part of the xlnscpp library itself.  Clone xlnscpp and build:
-
-```bash
-g++ -O2 -o xlns32test xlns32test.cpp -lm && ./xlns32test
-g++ -O2 -o xlns16test xlns16test.cpp -lm && ./xlns16test
-```
-
-Key observations from the output are discussed in Section 3.1 of the proposal.  The short version: `xlns32` achieves sub-0.1% relative error on all numeric tests; `xlns16` is accurate for short accumulations (dot products) but shows quantisation absorption in very long sums — a property that is acceptable and expected for LLM matrix multiply.
-
-### Challenge 2 — ggml FP32 matrix multiplication
-
-`simple-ctx.cpp` (no scheduler) and `simple-backend.cpp` (full backend scheduler) are unmodified ggml examples, copied here for reference.  Build them inside the ggml repository:
-
-```bash
-cd ggml && mkdir build && cd build
-cmake .. && cmake --build . --target simple-ctx simple-backend -j4
-./bin/simple-ctx
-./bin/simple-backend
-```
-
-### Challenge 3 — Standalone FP matrix multiply
-
-```bash
-g++ -O2 -o standalone_matmult challenges/challenge3/standalone_matmult.cpp -lm
-./standalone_matmult
-```
-
-Expected output (A × B^T for the 4×2 and 3×2 reference matrices):
-```
-  60.000  90.000  42.000
-  55.000  54.000  29.000
-  50.000  54.000  28.000
- 110.000 126.000  64.000
-```
-
-### Challenge 4 — xlns32 internal matrix multiply
-
-```bash
-g++ -O2 -o lns_matmult_xlns32 challenges/challenge4/lns_matmult_xlns32.cpp \
-    -Ixlnscpp -lm
-./lns_matmult_xlns32
-```
-
-The function signature is identical to Challenge 3 (`float*` in, `float*` out).  All internal arithmetic uses `xlns32_float`; conversion is handled automatically by the xlnscpp assignment operator.
-
-For the table-approximation variant (removes `xlns32_ideal`):
-```bash
-g++ -O2 -o lns_matmult_xlns32_approx challenges/challenge4/lns_matmult_xlns32_approx.cpp \
-    -Ixlnscpp -lm
-```
-
-### Challenge 5 — xlns16 internal matrix multiply
-
-```bash
-g++ -O2 -o lns_matmult_xlns16 challenges/challenge5/lns_matmult_xlns16.cpp \
-    -Ixlnscpp -lm
-./lns_matmult_xlns16
-```
-
-Analogous to Challenge 4 but with `xlns16_float`, demonstrating the precision trade-off of 16-bit LNS.
-
----
 
 ## LNS Backend
 
