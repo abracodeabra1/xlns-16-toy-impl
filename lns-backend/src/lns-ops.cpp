@@ -241,21 +241,9 @@ void lns_scale(struct ggml_tensor * dst) {
     }
 }
 
-// fp2xlns16(-INFINITY) is undefined behaviour: casting ±inf to uint16 is UB and
-// produces garbage that xlns162fp decodes as an arbitrary value.
-// Use this sentinel (sign=1, abs=max) wherever -inf semantics are needed.
-static const xlns16 LNS16_NEG_INF = (xlns16)0xFFFFu;
-
-// Safe float->xlns16 that maps -inf (and any value past xlns16 range) to LNS16_NEG_INF
-// so that xlns16_exp(LNS16_NEG_INF - max) underflows cleanly to xlns16_zero.
-static inline xlns16 float_to_lns16_safe(float v) {
-    if (v <= -3.0e38f) return LNS16_NEG_INF;
-    return fp2xlns16(v);
-}
-
 // Add an F32 mask entry to an xlns16 value (mask tensor is always F32 in ggml).
 static inline xlns16 xlns16_add_mask_f32(xlns16 v, float m) {
-    if (m <= -3.0e38f) return LNS16_NEG_INF;
+    if (m <= -3.0e38f) return xlns16_neg_inf;
     if (m == 0.0f) return v;
     return xlns16_add(v, fp2xlns16(m));
 }
@@ -300,20 +288,12 @@ void lns_soft_max(struct ggml_tensor * dst) {
                 }
 
                 // Step 1: scale + mask, find max.
-                // Use LNS16_NEG_INF instead of fp2xlns16(-INFINITY): the latter is UB
-                // and produces garbage, causing masked positions to leak into the softmax.
                 std::vector<xlns16> row(ne00);
-                xlns16 max_val = LNS16_NEG_INF;
+                xlns16 max_val = xlns16_neg_inf;
                 for (int64_t i0 = 0; i0 < ne00; i0++) {
                     xlns16 v = read_elem_xlns16(s0_row, i0, src0->type);
 
-                    // --- float scale+mask path (previous implementation; uncomment to compare) ---
-                    // float val = xlns162fp(v) * scale;
-                    // if (mask) val += mask[i0];
-                    // row[i0] = float_to_lns16_safe(val);
-
-                    // --- pure-xlns16 scale+mask path ---
-                    if (v != LNS16_NEG_INF) {
+                    if (v != xlns16_neg_inf) {
                         v = xlns16_mul(v, scale_lns);
                         if (mask) v = xlns16_add_mask_f32(v, mask[i0]);
                     }
@@ -366,19 +346,13 @@ void lns_rms_norm(struct ggml_tensor * dst) {
                 xlns16 sum_sq = fp2xlns16(0.0f);
                 for (int64_t i0 = 0; i0 < ne00; i0++) {
                     xlns16 x = read_elem_xlns16(s, i0, src0->type);
-                    sum_sq = xlns16_add(sum_sq, xlns16_mul(x, x));
+                    sum_sq = xlns16_add(sum_sq, xlns16_square(x));
                 }
 
-                // mean = sum_sq / n
+                // mean = sum_sq / n; inv_rms = 1 / sqrt(mean + eps)
                 xlns16 mean = xlns16_div(sum_sq, fp2xlns16((float)ne00));
-
-                // rms = sqrt(mean + eps)
                 xlns16 rms = xlns16_add(mean, fp2xlns16(eps));
-                xlns16_float rms_f = float2xlns16_(xlns162fp(rms));
-                xlns16_float sqrt_rms = sqrt(rms_f);
-
-                // inv_rms = 1 / sqrt_rms
-                xlns16 inv_rms = xlns16_div(fp2xlns16(1.0f), xlns16_internal(sqrt_rms));
+                xlns16 inv_rms = xlns16_recip(xlns16_sqrt(rms));
 
                 // normalize: d[i] = s[i] * inv_rms
                 for (int64_t i0 = 0; i0 < ne00; i0++) {
@@ -413,8 +387,7 @@ void lns_diag_mask_inf(struct ggml_tensor * dst) {
     }
 
     if (dst->type == GGML_TYPE_LNS16) {
-        // Use LNS16_NEG_INF sentinel: fp2xlns16(-INFINITY) is UB (cast of inf to uint16)
-        const xlns16 neg_inf = LNS16_NEG_INF;
+        const xlns16 neg_inf = xlns16_neg_inf;
         xlns16 * data = (xlns16 *)dst->data;
         for (int64_t k = 0; k < nz; k++) {
             for (int64_t j = 0; j < nr; j++) {
