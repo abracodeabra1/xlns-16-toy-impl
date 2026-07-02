@@ -241,11 +241,17 @@ void lns_scale(struct ggml_tensor * dst) {
     }
 }
 
-// Add an F32 mask entry to an xlns16 value (mask tensor is always F32 in ggml).
-static inline xlns16 xlns16_add_mask_f32(xlns16 v, float m) {
+// Convert one F32 mask entry to xlns16 (mask tensor is always F32 in ggml).
+static inline xlns16 f32_mask_to_lns16(float m) {
     if (m <= -3.0e38f) return xlns16_neg_inf;
-    if (m == 0.0f) return v;
-    return xlns16_add(v, fp2xlns16(m));
+    return fp2xlns16(m);
+}
+
+// Add a preconverted xlns16 mask entry to v.
+static inline xlns16 xlns16_add_mask_lns(xlns16 v, xlns16 m_lns) {
+    if (m_lns == xlns16_neg_inf) return xlns16_neg_inf;
+    if (xlns16_is_zero(m_lns)) return v;
+    return xlns16_add(v, m_lns);
 }
 
 // ============================================================
@@ -279,12 +285,17 @@ void lns_soft_max(struct ggml_tensor * dst) {
                 void * d_row = (char *)dst->data
                     + i1*dst->nb[1] + i2*dst->nb[2] + i3*dst->nb[3];
 
-                // Get mask row if present (mask is always F32)
+                // Get mask row if present (mask is always F32); convert once per row.
                 const float * mask = nullptr;
+                std::vector<xlns16> mask_lns;
                 if (src1) {
                     const int64_t ne12 = src1->ne[2];
                     mask = (const float *)((const char *)src1->data
                         + i1*src1->nb[1] + (i2 % ne12)*src1->nb[2] + i3*src1->nb[3]);
+                    mask_lns.resize((size_t)ne00);
+                    for (int64_t i0 = 0; i0 < ne00; i0++) {
+                        mask_lns[(size_t)i0] = f32_mask_to_lns16(mask[i0]);
+                    }
                 }
 
                 // Step 1: scale + mask, find max.
@@ -295,7 +306,7 @@ void lns_soft_max(struct ggml_tensor * dst) {
 
                     if (v != xlns16_neg_inf) {
                         v = xlns16_mul(v, scale_lns);
-                        if (mask) v = xlns16_add_mask_f32(v, mask[i0]);
+                        if (mask) v = xlns16_add_mask_lns(v, mask_lns[(size_t)i0]);
                     }
                     row[i0] = v;
 
@@ -303,7 +314,7 @@ void lns_soft_max(struct ggml_tensor * dst) {
                 }
 
                 // Step 2: exp(x - max) and sum, all in xlns16
-                xlns16 sum = fp2xlns16(0.0f);
+                xlns16 sum = xlns16_zero;
                 for (int64_t i0 = 0; i0 < ne00; i0++) {
                     xlns16 diff = xlns16_sub(row[i0], max_val);
                     row[i0] = xlns16_exp(diff);
@@ -334,6 +345,9 @@ void lns_rms_norm(struct ggml_tensor * dst) {
     const int64_t ne02 = src0->ne[2];
     const int64_t ne03 = src0->ne[3];
 
+    const xlns16 inv_n_lns = fp2xlns16(1.0f / (float)ne00);
+    const xlns16 eps_lns   = fp2xlns16(eps);
+
     for (int64_t i3 = 0; i3 < ne03; i3++) {
         for (int64_t i2 = 0; i2 < ne02; i2++) {
             for (int64_t i1 = 0; i1 < ne01; i1++) {
@@ -343,15 +357,15 @@ void lns_rms_norm(struct ggml_tensor * dst) {
                     + i1*dst->nb[1] + i2*dst->nb[2] + i3*dst->nb[3];
 
                 // sum of squares in xlns16
-                xlns16 sum_sq = fp2xlns16(0.0f);
+                xlns16 sum_sq = xlns16_zero;
                 for (int64_t i0 = 0; i0 < ne00; i0++) {
                     xlns16 x = read_elem_xlns16(s, i0, src0->type);
                     sum_sq = xlns16_add(sum_sq, xlns16_square(x));
                 }
 
                 // mean = sum_sq / n; inv_rms = 1 / sqrt(mean + eps)
-                xlns16 mean = xlns16_div(sum_sq, fp2xlns16((float)ne00));
-                xlns16 rms = xlns16_add(mean, fp2xlns16(eps));
+                xlns16 mean = xlns16_mul(sum_sq, inv_n_lns);
+                xlns16 rms = xlns16_add(mean, eps_lns);
                 xlns16 inv_rms = xlns16_recip(xlns16_sqrt(rms));
 
                 // normalize: d[i] = s[i] * inv_rms
